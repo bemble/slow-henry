@@ -1,8 +1,13 @@
 defmodule RetrievalNodeWeb.ConnectionsLive do
   @moduledoc """
-  The external services Slow Henry talks to: the Ollama embedding server
-  (when `OLLAMA_ENDPOINT` is set), and Google Drive authorization, entirely
-  from the UI.
+  The app's version, how to add its MCP endpoint to a client, and the
+  external services Slow Henry talks to: the Ollama embedding server (when
+  `OLLAMA_ENDPOINT` is set), and Google Drive authorization, entirely from
+  the UI.
+
+  The MCP URL shown is built from the URL the page was opened with, so it is
+  the address this browser reaches the server at (a LAN host, not
+  `localhost`, when the server runs elsewhere).
 
   Ollama's status is probed asynchronously on each visit (version, model
   pulled, a one-text embedding round trip); "Check again" re-probes.
@@ -119,9 +124,10 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
+  def handle_params(params, uri, socket) do
     socket =
       assign(socket,
+        mcp_url: mcp_url(uri),
         configured: OAuth.configured?(),
         authorized: OAuth.authorized?(),
         token_source: OAuth.token_source()
@@ -235,11 +241,29 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   defp describe(other), do: "Authorization failed: #{inspect(other)}"
 
+  defp mcp_url(uri) do
+    %URI{URI.parse(uri) | path: "/mcp", query: nil, fragment: nil} |> URI.to_string()
+  end
+
+  defp version, do: to_string(Application.spec(:retrieval_node, :vsn))
+
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={:connections}>
-      <h1 class="text-2xl font-semibold">Connections</h1>
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h1 class="text-2xl font-semibold">Connections</h1>
+        <a
+          id="app-version"
+          href={"https://github.com/bemble/slow-henry/releases/tag/v#{version()}"}
+          target="_blank"
+          class="link link-hover text-sm opacity-70"
+        >
+          Slow Henry v{version()}
+        </a>
+      </div>
+
+      <.mcp_section url={@mcp_url} />
 
       <section id="ollama" class="space-y-2">
         <h2 class="text-lg font-semibold">Embeddings</h2>
@@ -332,6 +356,52 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
       </details>
     </Layouts.app>
     """
+  end
+
+  attr :url, :string, required: true
+
+  defp mcp_section(assigns) do
+    ~H"""
+    <section id="mcp" class="space-y-2">
+      <h2 class="text-lg font-semibold">MCP server</h2>
+      <p class="text-sm opacity-70">
+        The tools <code>semantic_search</code>, <code>grep</code>, <code>get_file</code>
+        and <code>list_repos</code>, over Streamable HTTP. No authentication: keep the
+        server on your LAN.
+      </p>
+      <p class="text-sm">
+        URL: <code id="mcp-url" class="select-all">{@url}</code>
+      </p>
+      <div class="grid gap-3 text-sm lg:grid-cols-2">
+        <div>
+          <div class="mb-1 font-medium">Claude Code</div>
+          <pre class="select-all overflow-x-auto rounded-box bg-base-200 p-3 text-xs">claude mcp add --transport http slow-henry {@url}</pre>
+        </div>
+        <div>
+          <div class="mb-1 font-medium">
+            Project <code>.mcp.json</code> (Claude Code), or Cursor's <code>mcp.json</code>
+          </div>
+          <pre class="select-all overflow-x-auto rounded-box bg-base-200 p-3 text-xs">{mcp_json("mcpServers", @url)}</pre>
+        </div>
+        <div>
+          <div class="mb-1 font-medium">VS Code (<code>.vscode/mcp.json</code>)</div>
+          <pre class="select-all overflow-x-auto rounded-box bg-base-200 p-3 text-xs">{mcp_json("servers", @url)}</pre>
+        </div>
+        <div>
+          <div class="mb-1 font-medium">Other clients</div>
+          <p class="opacity-70">
+            Add a remote server with the <em>Streamable HTTP</em> transport and the URL above.
+            Clients that only launch local (stdio) servers can go through
+            <code>npx mcp-remote {@url} --allow-http</code>.
+          </p>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  defp mcp_json(key, url) do
+    Jason.encode!(%{key => %{"slow-henry" => %{"type" => "http", "url" => url}}}, pretty: true)
   end
 
   attr :github, :map, required: true
