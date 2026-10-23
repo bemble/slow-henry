@@ -40,6 +40,24 @@ page) would burn the token; any refresh racing a delete resurrects it.
 Test: five concurrent `access_token/0` calls against a slow `Req.Test` stub
 hit the token endpoint once.
 
+## Also seen: a refresh from another process
+
+A one-off `mix run` script that called `access_token/0` refreshed from its own
+BEAM. GitHub revoked the server's cached access token, and the server kept
+using it: git fetches failed (`could not read Username`), PR syncs got 401s
+until one of them dropped the cache. Since then, a git refusal also calls
+`invalidate/0`, so the job's retry refreshes. Don't refresh from a second
+node or a script while the server runs — the `:global` lock only covers one node.
+
+## A token without access looks like success or like a write error
+
+- GraphQL `search` on a repo the token can't see returns zero results, not an
+  error. The PR query now also asks for `repository(owner:, name:) { id }`;
+  null means `{:github_repo_not_visible, repo}`, and the job fails.
+- git gets `remote: Write access to repository not granted` / 403 even for a
+  read-only fetch. The error now says to check that the App is installed on
+  the repo with Contents read access.
+
 ## Prevention
 
 For any OAuth provider with rotating refresh tokens, treat the refresh as a

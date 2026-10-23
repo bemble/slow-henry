@@ -13,7 +13,8 @@ defmodule RetrievalNode.Ingest.GitHub do
   alias RetrievalNode.GitHub.OAuth
 
   @query """
-  query($q: String!, $after: String) {
+  query($q: String!, $after: String, $owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) { id }
     search(query: $q, type: ISSUE, first: 50, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -53,13 +54,27 @@ defmodule RetrievalNode.Ingest.GitHub do
   (ISO 8601), oldest update first. Returns `{:ok, prs, next_cursor | nil}`.
   """
   def merged_prs_page(repo, since, cursor \\ nil) do
+    [owner, name] = String.split(repo, "/", parts: 2)
     search = "repo:#{repo} is:pr is:merged updated:>=#{since} sort:updated-asc"
-    vars = if cursor, do: %{"q" => search, "after" => cursor}, else: %{"q" => search}
+    vars = %{"q" => search, "owner" => owner, "name" => name}
+    vars = if cursor, do: Map.put(vars, "after", cursor), else: vars
 
-    with {:ok, %{"data" => %{"search" => search}}} <- graphql(@query, vars) do
-      prs = for node <- search["nodes"] || [], node["number"], do: to_pr(repo, node)
-      next = if search["pageInfo"]["hasNextPage"], do: search["pageInfo"]["endCursor"]
-      {:ok, prs, next}
+    # A search on a repo the token can't see just finds nothing; asking for
+    # the repository too turns that into an error instead of a silent no-op.
+    case graphql(@query, vars) do
+      {:ok, %{"data" => %{"repository" => %{"id" => _}, "search" => search}}} ->
+        prs = for node <- search["nodes"] || [], node["number"], do: to_pr(repo, node)
+        next = if search["pageInfo"]["hasNextPage"], do: search["pageInfo"]["endCursor"]
+        {:ok, prs, next}
+
+      {:ok, %{"data" => %{"repository" => nil}}} ->
+        {:error, {:github_repo_not_visible, repo}}
+
+      {:error, :github_not_found} ->
+        {:error, {:github_repo_not_visible, repo}}
+
+      other ->
+        other
     end
   end
 
@@ -136,7 +151,7 @@ defmodule RetrievalNode.Ingest.GitHub do
 
       case Req.post(req) do
         {:ok, %{status: 200, body: %{"errors" => [_ | _] = errors}}} ->
-          {:error, {:github, Enum.map(errors, & &1["message"])}}
+          graphql_errors(errors)
 
         {:ok, %{status: 200, body: body}} ->
           {:ok, body}
@@ -153,5 +168,11 @@ defmodule RetrievalNode.Ingest.GitHub do
           {:error, reason}
       end
     end
+  end
+
+  defp graphql_errors(errors) do
+    if Enum.any?(errors, &(&1["type"] == "NOT_FOUND")),
+      do: {:error, :github_not_found},
+      else: {:error, {:github, Enum.map(errors, & &1["message"])}}
   end
 end
