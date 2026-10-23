@@ -18,6 +18,7 @@ defmodule RetrievalNode.Ingest.Drive do
   @folder_mime "application/vnd.google-apps.folder"
   @file_fields "id,name,mimeType,parents,driveId,trashed,modifiedTime,webViewLink,owners(me),labelInfo"
   @page_size 1000
+  @export_timeout :timer.minutes(2)
 
   def doc_mime, do: @doc_mime
   def folder_mime, do: @folder_mime
@@ -133,7 +134,12 @@ defmodule RetrievalNode.Ingest.Drive do
 
   @doc "A Google Doc exported as markdown."
   def export_doc(file_id) do
-    with {:ok, body} <- get("/drive/v3/files/#{seg(file_id)}/export", mimeType: "text/markdown") do
+    # Drive renders the export on the fly: a long doc can take well over Req's
+    # default 15 s receive timeout.
+    with {:ok, body} <-
+           get("/drive/v3/files/#{seg(file_id)}/export", [mimeType: "text/markdown"],
+             receive_timeout: @export_timeout
+           ) do
       {:ok, to_string(body)}
     end
   end
@@ -187,9 +193,9 @@ defmodule RetrievalNode.Ingest.Drive do
 
   # --- http ---
 
-  defp get(url, params) do
+  defp get(url, params, opts \\ []) do
     with {:ok, token} <- OAuth.access_token() do
-      case Req.get(req(token), url: url, params: params) do
+      case Req.get(req(token), [url: url, params: params] ++ opts) do
         {:ok, %{status: 200, body: body}} ->
           {:ok, body}
 
