@@ -4,12 +4,15 @@ defmodule Mix.Tasks.Rn.Reembed do
   @moduledoc """
   Re-embeds the stored chunks (see `RetrievalNode.Embedding.Reembed`) — run it
   after switching the embedding backend, model or prefixes, e.g. after
-  setting `OLLAMA_ENDPOINT`. Stop the server first, so nothing indexes with
-  the old setup meanwhile.
+  setting `OLLAMA_ENDPOINT`. It can run while the server is up: a chunk the
+  server rewrites meanwhile keeps the server's (current) vector.
 
-      mix rn.reembed                    # every chunk
+      mix rn.reembed                    # chunks not on the current setup yet
+      mix rn.reembed --all              # every chunk
       mix rn.reembed --source naboo     # one source
-      mix rn.reembed --after <chunk-id> # resume an interrupted run
+
+  Only stale chunks are redone by default, so re-running it resumes an
+  interrupted run.
   """
 
   use Mix.Task
@@ -17,7 +20,7 @@ defmodule Mix.Tasks.Rn.Reembed do
   alias RetrievalNode.Embedding
   alias RetrievalNode.Embedding.{NxServingImpl, Reembed}
 
-  @switches [source: :string, after: :string, batch: :integer]
+  @switches [source: :string, after: :string, batch: :integer, all: :boolean]
 
   @impl Mix.Task
   def run(args) do
@@ -32,11 +35,14 @@ defmodule Mix.Tasks.Rn.Reembed do
 
     started = System.monotonic_time(:millisecond)
 
-    Mix.shell().info("Re-embedding with #{inspect(Embedding.impl())}…")
+    Mix.shell().info(
+      "Re-embedding with #{inspect(Embedding.impl())} (profile #{Embedding.profile()})…"
+    )
 
     {:ok, count} =
       Reembed.run(
         source: opts[:source],
+        all: opts[:all],
         after: opts[:after],
         batch: opts[:batch] || 256,
         progress: &report(&1, started)

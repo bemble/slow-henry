@@ -68,6 +68,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
     :content,
     :content_hash,
     :embedding,
+    :embedding_profile,
     :context_breadcrumb,
     :metadata,
     :parse_status,
@@ -277,6 +278,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # instead is what makes a `force: true` re-derive cheap.
   defp embed_with_reuse(row, built) do
     existing = load_existing_chunks(row)
+    profile = Embedding.profile()
 
     {reused_entries, to_embed} =
       Enum.split_with(built, fn entry ->
@@ -284,8 +286,13 @@ defmodule RetrievalNode.Ingest.FileIngest do
           # Reuse only when the text is unchanged AND the stored row actually
           # HAS an embedding — Chunk.embedding is nullable, and reusing a nil
           # would persist an unembedded chunk and skip embedding it.
-          %{content_hash: hash, embedding: emb} -> hash == entry.content_hash and not is_nil(emb)
-          nil -> false
+          # …and only a vector from the current embedding setup: after a
+          # backend/model switch an unchanged chunk is re-embedded too.
+          %{content_hash: hash, embedding: emb, embedding_profile: p} ->
+            hash == entry.content_hash and not is_nil(emb) and p == profile
+
+          nil ->
+            false
         end
       end)
 
@@ -319,7 +326,15 @@ defmodule RetrievalNode.Ingest.FileIngest do
 
       query ->
         query
-        |> select([c], {c.chunk_key, %{content_hash: c.content_hash, embedding: c.embedding}})
+        |> select(
+          [c],
+          {c.chunk_key,
+           %{
+             content_hash: c.content_hash,
+             embedding: c.embedding,
+             embedding_profile: c.embedding_profile
+           }}
+        )
         |> Repo.all()
         |> Map.new()
     end
@@ -380,6 +395,9 @@ defmodule RetrievalNode.Ingest.FileIngest do
       context_breadcrumb: entry.breadcrumb,
       metadata: row.metadata,
       embedding: Map.fetch!(embeddings_by_key, entry.chunk_key),
+      # Reuse requires a matching profile, so every vector written here is
+      # from the current setup.
+      embedding_profile: Embedding.profile(),
       parse_status: to_enum(:parse_status, parse_status),
       secrets_status: to_enum(:secrets_status, opts[:secrets_status]),
       # The raw file hash this chunk set was derived from — FileIngest's

@@ -31,6 +31,13 @@ defmodule RetrievalNode.Embedding do
   @callback dimensions() :: pos_integer()
 
   @doc """
+  Identifies the vector space this impl produces — backend, model and task
+  prefixes. Vectors with different profiles don't belong in one index; it is
+  stored on every chunk (`chunks.embedding_profile`).
+  """
+  @callback profile() :: String.t()
+
+  @doc """
   The configured embedding implementation module.
 
   Raises a clear `ArgumentError` if the configured `:embedding_impl` module isn't
@@ -61,4 +68,8 @@ defmodule RetrievalNode.Embedding do
   @doc "Embedding dimensionality (384 after Matryoshka truncation)."
   @spec dimensions() :: pos_integer()
   def dimensions, do: impl().dimensions()
+
+  @doc "The configured impl's profile (see the `profile/0` callback)."
+  @spec profile() :: String.t()
+  def profile, do: impl().profile()
 end

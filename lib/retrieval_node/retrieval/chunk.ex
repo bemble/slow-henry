@@ -22,6 +22,8 @@ defmodule RetrievalNode.Retrieval.Chunk do
     field :context_breadcrumb, :string
     field :metadata, :map, default: %{}
     field :embedding, Pgvector.Ecto.Vector
+    # Backend + model + prefixes that produced `embedding` (Embedding.profile/0).
+    field :embedding_profile, :string
 
     field :parse_status, Ecto.Enum,
       values: [:ok, :heuristic_fallback, :crashed_fallback],

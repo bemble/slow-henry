@@ -21,6 +21,10 @@ defmodule RetrievalNode.Embedding.NxServingImpl do
   # versus the native 768 at a <2% retrieval-quality cost (validated in Phase 9).
   @dimensions 384
 
+  # No task prefixes: texts are embedded as-is.
+  @impl true
+  def profile, do: "bumblebee:nomic-ai/nomic-embed-text-v1.5:no-prefix:#{@dimensions}"
+
   @impl true
   def dimensions, do: @dimensions
 
