@@ -96,14 +96,16 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       socket.assigns.drive.include
       |> Enum.filter(&(Drive.id_from_input(&1) == {:ok, &1}))
       |> Enum.reject(&Map.has_key?(socket.assigns.drive_info, &1))
-      |> Enum.reduce(socket, fn id, socket ->
-        socket
-        |> update(:drive_info, &Map.put(&1, id, :loading))
-        |> start_async({:drive, id}, fn -> Drive.describe(id) end)
-      end)
+      |> Enum.reduce(socket, &describe_drive_id/2)
     else
       socket
     end
+  end
+
+  defp describe_drive_id(id, socket) do
+    socket
+    |> update(:drive_info, &Map.put(&1, id, :loading))
+    |> start_async({:drive, id}, fn -> Drive.describe(id) end)
   end
 
   @impl true
