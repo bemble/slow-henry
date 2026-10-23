@@ -47,6 +47,18 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
   def dimensions, do: @dimensions
 
   @impl true
+  def profile do
+    prefixes =
+      case {config(:query_prefix), config(:document_prefix)} do
+        {"search_query: ", "search_document: "} -> "nomic-prefixes"
+        {"", ""} -> "no-prefix"
+        {q, d} -> "q=#{inspect(q)},d=#{inspect(d)}"
+      end
+
+    "ollama:#{config(:model)}:#{prefixes}:#{@dimensions}"
+  end
+
+  @impl true
   def embed(text) when is_binary(text) do
     [vector] = request([config(:query_prefix) <> text])
     vector

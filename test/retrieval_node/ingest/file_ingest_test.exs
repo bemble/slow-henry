@@ -435,6 +435,30 @@ defmodule RetrievalNode.Ingest.FileIngestTest do
     refute vector_b_after == vector_b_before
   end
 
+  test "embedding reuse needs the same embedding profile; written chunks carry the profile", %{
+    source: source
+  } do
+    natural_key = "repo:acme/app:profile.py"
+    force_chunk(chunk_result([{"stable text", "a", 1, 1}]))
+
+    assert {:ok, %{embedded: 1}} =
+             FileIngest.apply(seed_raw(source, "v1", natural_key, "profile.py"), [])
+
+    assert [%{embedding_profile: "stub"}] =
+             Repo.all(from c in Chunk, where: c.source_id == ^source.id)
+
+    # The stored vector now looks like it came from another setup.
+    Repo.update_all(from(c in Chunk, where: c.source_id == ^source.id),
+      set: [embedding_profile: "bumblebee:old"]
+    )
+
+    assert {:ok, %{embedded: 1, reused: 0}} =
+             FileIngest.apply(seed_raw(source, "v2", natural_key, "profile.py"), force: true)
+
+    assert [%{embedding_profile: "stub"}] =
+             Repo.all(from c in Chunk, where: c.source_id == ^source.id)
+  end
+
   test "embedding reuse skips a stored chunk whose embedding is nil (re-embeds it)", %{
     source: source
   } do

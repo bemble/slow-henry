@@ -11,6 +11,9 @@ defmodule RetrievalNode.Embedding.StubImpl do
   @dimensions 384
 
   @impl true
+  def profile, do: "stub"
+
+  @impl true
   def dimensions, do: @dimensions
 
   @impl true

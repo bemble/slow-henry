@@ -5,6 +5,9 @@ defmodule RetrievalNode.Embedding.UnavailableImpl do
   alias RetrievalNode.Embedding.Unavailable
 
   @impl true
+  def profile, do: "unavailable"
+
+  @impl true
   def dimensions, do: 384
 
   @impl true

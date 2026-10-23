@@ -103,13 +103,18 @@ Through Ollama, chunks are embedded with nomic's `search_document: ` prefix and
 queries with `search_query: `, as the model was trained.
 
 **Switching setups.** Vectors from different backends, models or prefixes
-don't mix well in one index, so after switching re-embed what is stored:
+don't mix well in one index. Every chunk records the setup that embedded it
+(`chunks.embedding_profile`, e.g. `ollama:nomic-embed-text:nomic-prefixes:384`),
+and new or changed files are always embedded with the current one. To redo
+the rest:
 
 ```sh
-mix rn.reembed     # stop the server first; --source NAME, --after ID to resume
+mix rn.reembed     # only chunks not on the current setup; re-run to resume
+                   # --all redoes everything, --source NAME one source
 ```
 
-It re-embeds the stored chunk text without re-chunking.
+It re-embeds the stored chunk text without re-chunking, and can run while
+the server is up (a chunk the server rewrites meanwhile keeps its new vector).
 
 **When Ollama is unreachable** (connection refused, timeout, 502/503/504),
 nothing is lost or given up: ingestion defers the source's staged files and
