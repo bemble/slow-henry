@@ -6,9 +6,9 @@
 #   docker build -t slow-henry .
 #
 # Versions match .mise.toml and .github/workflows/ci.yml.
-ARG ELIXIR_VERSION=1.20.2
-ARG OTP_VERSION=29.0.3
-ARG DEBIAN_VERSION=trixie-20260713-slim
+ARG ELIXIR_VERSION=1.20.4
+ARG OTP_VERSION=29.1.2
+ARG DEBIAN_VERSION=trixie-20261005-slim
 
 ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}"
 ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
@@ -45,6 +45,14 @@ COPY mix.exs mix.lock ./
 RUN mix deps.get --only $MIX_ENV
 RUN mkdir config
 COPY config/config.exs config/${MIX_ENV}.exs config/
+
+# GitHub-hosted artifacts (tree-sitter NIF, XLA archive, Tailwind) fetched with
+# curl: OTP 29.1 :httpc rejects the ~11 KB headers of GitHub release downloads.
+ENV RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH=/root/.cache/github-artifacts/rustler_precompiled \
+    XLA_CACHE_DIR=/root/.cache/github-artifacts/xla
+COPY scripts/prefetch_github_artifacts.sh scripts/
+RUN scripts/prefetch_github_artifacts.sh --tailwind
+
 RUN mix deps.compile
 
 RUN mix assets.setup

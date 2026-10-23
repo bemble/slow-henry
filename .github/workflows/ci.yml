@@ -6,8 +6,8 @@ on:
   pull_request:
 
 env:
-  ELIXIR_VERSION: "1.20.2-otp-29"
-  OTP_VERSION: "29.0.3"
+  ELIXIR_VERSION: "1.20.4-otp-29"
+  OTP_VERSION: "29.1.2"
   # System packages needed to compile NIFs pulled in by mix deps.get — chiefly
   # EXLA (builds a C++ shim against a downloaded XLA archive).
   APT_PACKAGES: build-essential automake autoconf pkg-config libssl-dev
@@ -33,6 +33,9 @@ jobs:
           key: ${{ runner.os }}-dev-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-dev-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       - run: mix compile --warnings-as-errors
       - run: mix format --check-formatted
 
@@ -56,6 +59,9 @@ jobs:
           key: ${{ runner.os }}-dev-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-dev-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       - run: mix credo --strict
 
   sobelow:
@@ -78,6 +84,9 @@ jobs:
           key: ${{ runner.os }}-dev-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-dev-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       # Config.HTTPS ignored deliberately (mirrors .sobelow-conf, which keeps
       # local `mix sobelow` runs in step): v1 serves plain HTTP on the LAN with
       # no auth and no TLS terminator in the deployment (url scheme "http" in
@@ -122,6 +131,9 @@ jobs:
           key: ${{ runner.os }}-test-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-test-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       # The `test` alias runs ecto.create + ecto.migrate before the suite; the
       # migrate step exercises the extension/HNSW setup against real pgvector.
       - run: mix test --warnings-as-errors
@@ -151,6 +163,9 @@ jobs:
           key: ${{ runner.os }}-plt-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-plt-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       - run: mix dialyzer --format github
 
   hex-audit:
@@ -194,4 +209,7 @@ jobs:
           key: ${{ runner.os }}-ubuntu-24.04-argus-dev-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-ubuntu-24.04-argus-dev-
       - run: mix deps.get
+      # Fetch GitHub-hosted artifacts with curl: OTP 29.1 :httpc rejects the
+      # ~11 KB headers of GitHub release downloads (see the script).
+      - run: scripts/prefetch_github_artifacts.sh
       - run: mix argus --fail-above 0
