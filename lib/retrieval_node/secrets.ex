@@ -19,8 +19,7 @@ defmodule RetrievalNode.Secrets do
   @doc "Path of the secrets file."
   def path, do: Path.join(data_dir(), @file_name)
 
-  @doc "The data directory."
-  def data_dir, do: Application.get_env(:retrieval_node, :data_dir, "data")
+  defp data_dir, do: RetrievalNode.data_dir()
 
   @doc "A stored secret, or nil (also when the file is missing or unreadable)."
   @spec get(String.t()) :: String.t() | nil

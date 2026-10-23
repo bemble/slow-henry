@@ -48,9 +48,6 @@ retrieval_node-*.tar
 /priv/static/cache_manifest.json
 /assets/node_modules/
 
-# The real list of indexed sources (private repo names, Drive ids).
-# Template: sources.example.toml
-/sources.toml
-
-# App-written data (secrets.toml with OAuth tokens). DATA_DIR in prod.
+# The app's data dir (DATA_DIR): sources.toml (private repo names, Drive
+# ids; template: sources.example.toml) and secrets.toml (OAuth tokens).
 /data/

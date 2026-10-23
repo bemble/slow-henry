@@ -78,8 +78,8 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/connections` page. |
-| `DATA_DIR` | Where the app writes its own data, e.g. `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
-| `SOURCES_FILE` | Path of the sources file (default `sources.toml`; use an absolute path for a release). |
+| `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
+| `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
 | `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
@@ -130,8 +130,9 @@ to full-text ranking — the search page shows a notice, and the
 
 ## Sources
 
-Git repos and the Google Drive scope are declared in `sources.toml`
-(git-ignored, since it names private repos; start from `sources.example.toml`):
+Git repos and the Google Drive scope are declared in `DATA_DIR/sources.toml`
+(`data/sources.toml` in dev, git-ignored since it names private repos; start
+by copying `sources.example.toml` there):
 
 ```toml
 [[git]]

@@ -39,6 +39,10 @@ defmodule RetrievalNode.SourcesFileTest do
               ]} = SourcesFile.load(path)
     end
 
+    test "the default path is DATA_DIR/sources.toml" do
+      assert SourcesFile.default_path() == Path.join(RetrievalNode.data_dir(), "sources.toml")
+    end
+
     test "the committed sources.example.toml is valid" do
       assert {:ok, [_ | _]} = SourcesFile.load("sources.example.toml")
     end

@@ -1,7 +1,7 @@
 # Sources indexed by Slow Henry (git repos + Google Drive).
-# Copy to sources.toml (git-ignored). The server applies it at start and
-# whenever it changes; `mix rn.sources --dry-run` previews. SOURCES_FILE=path
-# points at another file.
+# Copy to DATA_DIR/sources.toml (data/sources.toml in dev, git-ignored). The
+# server applies it at start and whenever it changes; `mix rn.sources
+# --dry-run` previews. SOURCES_FILE=path points at another file.
 #
 # Removing an entry deactivates the source (its chunks stay searchable);
 # `active = false` does the same while keeping it listed here.
