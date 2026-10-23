@@ -1,0 +1,21 @@
+# Build context for the Dockerfile: only what `mix release` needs.
+.git
+.github
+.claude
+.devcontainer
+.elixir_ls
+_build
+deps
+cover
+doc
+tmp
+data
+priv/plts
+priv/static/assets
+priv/static/cache_manifest.json
+assets/node_modules
+rel/overlays/grammar-cache
+erl_crash.dump
+.env
+docker-compose.yml
+Dockerfile
