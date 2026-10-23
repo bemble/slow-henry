@@ -69,6 +69,36 @@ mix precommit      # warnings-as-errors compile, format, tests
 > `postStartCommand` restarts it on later boots). If the DB is ever unreachable:
 > `sudo pg_ctlcluster 18 main start`.
 
+### Prebuilt native artifacts
+
+Some deps ship native code that their maintainers publish prebuilt on GitHub
+releases, rather than in the Hex package (which holds source only):
+
+| Dep | Downloads | Building it instead |
+|---|---|---|
+| `tree_sitter_language_pack`, `tokenizers` | Rust NIF (`.so`) for the OS/CPU, checked against the package's checksum file | Rust toolchain, 5–15 min |
+| `xla` (for EXLA) | Google's XLA compiler, ~126 MB | Bazel, hours |
+| `tailwind` | Tailwind CSS CLI binary | none: only distributed this way |
+
+These deps download with Erlang's `:httpc`, which since **OTP 29.1** rejects
+responses with over 10 KB of headers (`{:header_too_long, {:max, 10240}}`).
+GitHub's release download redirect sends ~11 KB, so a build with an empty cache
+fails. `scripts/prefetch_github_artifacts.sh` downloads the same files with
+curl, verifies their checksums, and puts them where each dep looks before
+downloading. CI, the Dockerfile and `scripts/build_arm64.sh` run it after
+`mix deps.get`. Locally, if `mix setup` or `mix compile` fails with
+`header_too_long`:
+
+```sh
+export RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH="$HOME/.cache/github-artifacts/rustler_precompiled"
+export XLA_CACHE_DIR="$HOME/.cache/github-artifacts/xla"
+scripts/prefetch_github_artifacts.sh --tailwind
+mix setup
+```
+
+The script can go once those deps raise the limit themselves, or GitHub's
+headers shrink.
+
 ## Configuration
 
 Configuration comes from environment variables. They can be set in the
