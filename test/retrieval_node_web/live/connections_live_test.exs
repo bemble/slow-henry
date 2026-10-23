@@ -254,4 +254,113 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     {:ok, _view, html} = live(conn, ~p"/connections")
     assert html =~ "Computed in-process on the CPU"
   end
+
+  describe "GitHub" do
+    alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
+    alias RetrievalNode.Secrets
+
+    setup do
+      prev = %{
+        github: Application.get_env(:retrieval_node, :github),
+        req: Application.get_env(:retrieval_node, :github_req_options)
+      }
+
+      Application.put_env(:retrieval_node, :github, client_id: "Iv23cid", client_secret: "cs")
+      Application.put_env(:retrieval_node, :github_req_options, plug: {Req.Test, __MODULE__})
+      GitHubOAuth.invalidate()
+
+      on_exit(fn ->
+        GitHubOAuth.invalidate()
+        Application.put_env(:retrieval_node, :github, prev.github)
+        Application.put_env(:retrieval_node, :github_req_options, prev.req)
+      end)
+
+      # interval: long enough that the scheduled poll never fires during a
+      # test; the tests send :poll_github themselves.
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/login/device/code" ->
+            Req.Test.json(conn, %{
+              "device_code" => "dev-1",
+              "user_code" => "WDJB-MJHT",
+              "verification_uri" => "https://github.com/login/device",
+              "interval" => 600,
+              "expires_in" => 899
+            })
+
+          "/login/oauth/access_token" ->
+            Req.Test.json(conn, %{
+              "access_token" => "ghu_1",
+              "expires_in" => 28_800,
+              "refresh_token" => "ghr_1"
+            })
+
+          "/user" ->
+            Req.Test.json(conn, %{"login" => "octocat"})
+        end
+      end)
+
+      :ok
+    end
+
+    test "device flow: shows the code, stores the token, shows the account", %{conn: conn} do
+      {:ok, view, html} = live(conn, ~p"/connections")
+      assert html =~ "not connected"
+
+      view |> element("#connect-github") |> render_click()
+      assert view |> element("#github-device") |> render() =~ "WDJB-MJHT"
+
+      send(view.pid, :poll_github)
+      html = render_async(view)
+
+      refute html =~ "WDJB-MJHT"
+      assert html =~ "@octocat"
+      assert Secrets.get("github_refresh_token") == "ghr_1"
+      refute html =~ "ghr_1"
+      refute html =~ "ghu_1"
+      assert has_element?(view, "#disconnect-github")
+    end
+
+    test "a denied authorization is reported", %{conn: conn} do
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/login/device/code" ->
+            Req.Test.json(conn, %{
+              "device_code" => "dev-1",
+              "user_code" => "WDJB-MJHT",
+              "verification_uri" => "https://github.com/login/device",
+              "interval" => 600
+            })
+
+          "/login/oauth/access_token" ->
+            Req.Test.json(conn, %{"error" => "access_denied"})
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      view |> element("#connect-github") |> render_click()
+      send(view.pid, :poll_github)
+
+      assert view |> element("#github-error") |> render() =~ "Access was denied"
+      refute has_element?(view, "#github-device")
+    end
+
+    test "disconnect forgets the stored token", %{conn: conn} do
+      :ok = Secrets.put("github_refresh_token", "ghr_0")
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      # The account lookup (and its token refresh) has finished.
+      assert render_async(view) =~ "@octocat"
+
+      view |> element("#disconnect-github") |> render_click()
+
+      assert Secrets.get("github_refresh_token") == nil
+      assert render(view) =~ "not connected"
+    end
+
+    test "without a client id, explains what to configure", %{conn: conn} do
+      Application.put_env(:retrieval_node, :github, [])
+      {:ok, _view, html} = live(conn, ~p"/connections")
+      assert html =~ "GITHUB_CLIENT_ID"
+    end
+  end
 end

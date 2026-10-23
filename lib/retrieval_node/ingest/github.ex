@@ -1,13 +1,16 @@
 defmodule RetrievalNode.Ingest.GitHub do
   @moduledoc """
-  Merged pull requests of a GitHub repo, through the `gh` CLI (`gh api
-  graphql`), so authentication is whatever `gh auth login` set up for the
-  user running the server.
+  Merged pull requests of a GitHub repo, through GitHub's GraphQL API with
+  the GitHub App user token (`GitHub.OAuth`, connected from the Connections
+  page).
 
   `merged_prs_page/3` walks a search sorted by `updated` ascending, so a
   caller can store the last `updatedAt` it saw as its watermark and resume
-  from there. The runner is `:github_runner` in the app env (tests stub it).
+  from there. Req options are extended by `:github_req_options` (tests point
+  them at a `Req.Test` plug).
   """
+
+  alias RetrievalNode.GitHub.OAuth
 
   @query """
   query($q: String!, $after: String) {
@@ -122,35 +125,33 @@ defmodule RetrievalNode.Ingest.GitHub do
 
   # --- transport ---
 
+  @graphql_url "https://api.github.com/graphql"
+
   defp graphql(query, vars) do
-    runner = Application.get_env(:retrieval_node, :github_runner, &__MODULE__.gh/2)
+    with {:ok, token} <- OAuth.access_token() do
+      req =
+        [url: @graphql_url, json: %{query: query, variables: vars}, auth: {:bearer, token}]
+        |> Keyword.merge(retry: false, finch: [name: RetrievalNode.Finch])
+        |> Keyword.merge(Application.get_env(:retrieval_node, :github_req_options, []))
 
-    case runner.(query, vars) do
-      {:ok, %{"errors" => [_ | _] = errors}} ->
-        {:error, {:github, Enum.map(errors, & &1["message"])}}
+      case Req.post(req) do
+        {:ok, %{status: 200, body: %{"errors" => [_ | _] = errors}}} ->
+          {:error, {:github, Enum.map(errors, & &1["message"])}}
 
-      other ->
-        other
-    end
-  end
+        {:ok, %{status: 200, body: body}} ->
+          {:ok, body}
 
-  @doc false
-  # sobelow_skip ["CI.System"]
-  def gh(query, vars) do
-    args =
-      ["api", "graphql", "-f", "query=#{query}"] ++
-        Enum.flat_map(vars, fn {k, v} -> ["-f", "#{k}=#{v}"] end)
+        {:ok, %{status: 401}} ->
+          OAuth.invalidate()
+          {:error, :github_unauthorized}
 
-    case System.find_executable("gh") do
-      nil ->
-        {:error, :gh_not_found}
+        # GitHub's error bodies hold no secrets; keep a short prefix.
+        {:ok, %{status: status, body: body}} ->
+          {:error, {:github_http, status, body |> inspect(limit: 5) |> String.slice(0, 200)}}
 
-      gh ->
-        case System.cmd(gh, args, stderr_to_stdout: true) do
-          {out, 0} -> Jason.decode(out)
-          # gh prints the API error (no secrets) — keep a short prefix.
-          {out, code} -> {:error, {:gh_exit, code, String.slice(out, 0, 300)}}
-        end
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 end

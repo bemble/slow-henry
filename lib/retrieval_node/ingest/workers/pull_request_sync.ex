@@ -1,7 +1,8 @@
 defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   @moduledoc """
   Indexes the merged pull requests of a git source that has
-  `pull_requests = true` in sources.toml (off by default).
+  `pull_requests = true` in sources.toml (off by default), through the
+  GitHub App token connected on the Connections page (`GitHub.OAuth`).
 
   Each merged PR becomes one document of the git source — title, author,
   merge date, URL, description, then the human comments and reviews — under
@@ -70,6 +71,10 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
           true ->
             sync(source, repo, state, since, next, done)
         end
+
+      # Not connected: nothing a retry fixes; the next hourly run tries again.
+      {:error, :github_not_authorized} ->
+        {:cancel, :github_not_authorized}
 
       {:error, reason} ->
         {:error, reason}

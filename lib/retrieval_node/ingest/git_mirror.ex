@@ -21,6 +21,8 @@ defmodule RetrievalNode.Ingest.GitMirror do
   Errors surface as `{:error, reason}` tuples so callers need no bare rescue.
   """
 
+  alias RetrievalNode.GitHub.OAuth
+
   @type repo :: String.t()
   @type reason ::
           :git_not_found
@@ -86,13 +88,37 @@ defmodule RetrievalNode.Ingest.GitMirror do
   defp clone_or_fetch(path, url) do
     # Network ops legitimately take much longer than a local object-DB read, so they
     # use the longer network_timeout rather than the short MCP-facing default.
+    env = github_auth_env(url)
+
     if File.dir?(path) do
-      git(["--git-dir", path, "fetch", "--prune", "origin"], [0], network_timeout())
+      git({["--git-dir", path, "fetch", "--prune", "origin"], env}, [0], network_timeout())
     else
       File.mkdir_p!(mirror_root())
-      git(["clone", "--mirror", "--end-of-options", url, path], [0], network_timeout())
+      git({["clone", "--mirror", "--end-of-options", url, path], env}, [0], network_timeout())
     end
   end
+
+  # With a GitHub App token (GitHub.OAuth), github.com is reached with it, as
+  # an http.extraHeader passed through git's GIT_CONFIG_* environment — never
+  # on the command line, where `ps` would show it. Without one, git falls back
+  # to its own credential helper (e.g. `gh auth setup-git`).
+  defp github_auth_env("https://github.com/" <> _) do
+    case OAuth.access_token() do
+      {:ok, token} ->
+        basic = Base.encode64("x-access-token:" <> token)
+
+        [
+          {~c"GIT_CONFIG_COUNT", ~c"1"},
+          {~c"GIT_CONFIG_KEY_0", ~c"http.https://github.com/.extraheader"},
+          {~c"GIT_CONFIG_VALUE_0", String.to_charlist("AUTHORIZATION: basic " <> basic)}
+        ]
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp github_auth_env(_url), do: []
 
   @doc """
   Resolve a ref (default HEAD) to its commit sha. A brand-new repo with no
@@ -350,7 +376,10 @@ defmodule RetrievalNode.Ingest.GitMirror do
   # Port and captures its OS pid so an early-termination path (grep budget, or a
   # git_timeout on either) can SIGKILL the process directly — see the module doc
   # / @default_git_timeout comment for why Port.close/1 alone isn't enough.
-  defp open_git_port(git, args) do
+  defp open_git_port(git, args) when is_list(args), do: open_git_port(git, {args, []})
+
+  # `args` may come with extra environment variables: `{args, env}`.
+  defp open_git_port(git, {args, env}) do
     port =
       Port.open({:spawn_executable, git}, [
         :binary,
@@ -358,7 +387,8 @@ defmodule RetrievalNode.Ingest.GitMirror do
         :use_stdio,
         :hide,
         :stderr_to_stdout,
-        args: args
+        args: args,
+        env: env
       ])
 
     os_pid =

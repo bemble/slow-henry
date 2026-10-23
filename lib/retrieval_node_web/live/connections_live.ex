@@ -25,6 +25,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   alias RetrievalNode.Embedding
   alias RetrievalNode.Embedding.OllamaImpl
+  alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
   alias RetrievalNode.Google.OAuth
   alias RetrievalNode.Ingest.Drive
 
@@ -43,10 +44,23 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         ollama?: ollama?,
         ollama: nil,
         profile: Embedding.profile(),
-        profiles: RetrievalNode.Inventory.embedding_profiles()
+        profiles: RetrievalNode.Inventory.embedding_profiles(),
+        github: github_state(),
+        device: nil,
+        github_error: nil
       )
 
-    {:ok, if(ollama? and connected?(socket), do: probe_ollama(socket), else: socket)}
+    socket = if ollama? and connected?(socket), do: probe_ollama(socket), else: socket
+    {:ok, if(connected?(socket), do: fetch_github_login(socket), else: socket)}
+  end
+
+  defp github_state,
+    do: %{configured: GitHubOAuth.configured?(), source: GitHubOAuth.token_source(), login: nil}
+
+  defp fetch_github_login(socket) do
+    if socket.assigns.github.source,
+      do: start_async(socket, :github_login, &GitHubOAuth.login/0),
+      else: socket
   end
 
   defp probe_ollama(socket) do
@@ -56,12 +70,51 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   @impl true
   def handle_async(:ollama, {:ok, status}, socket), do: {:noreply, assign(socket, ollama: status)}
 
+  def handle_async(:github_login, {:ok, {:ok, login}}, socket),
+    do: {:noreply, update(socket, :github, &Map.put(&1, :login, login))}
+
+  def handle_async(:github_login, {:ok, {:error, reason}}, socket),
+    do: {:noreply, assign(socket, github_error: "Token rejected: #{inspect(reason)}")}
+
+  def handle_async(:github_login, {:exit, _reason}, socket), do: {:noreply, socket}
+
   def handle_async(:ollama, {:exit, reason}, socket),
     do:
       {:noreply,
        assign(socket,
          ollama: %{reachable: false, error: inspect(reason), endpoint: nil, model: nil}
        )}
+
+  @impl true
+  def handle_info(:poll_github, %{assigns: %{device: nil}} = socket), do: {:noreply, socket}
+
+  def handle_info(:poll_github, socket) do
+    device = socket.assigns.device
+
+    case GitHubOAuth.poll_device_flow(device.device_code) do
+      :ok ->
+        socket = assign(socket, device: nil, github: github_state())
+        {:noreply, fetch_github_login(socket)}
+
+      :pending ->
+        Process.send_after(self(), :poll_github, device.interval * 1000)
+        {:noreply, socket}
+
+      {:slow_down, interval} ->
+        Process.send_after(self(), :poll_github, interval * 1000)
+        {:noreply, assign(socket, device: %{device | interval: interval})}
+
+      {:error, reason} ->
+        message =
+          case reason do
+            "expired_token" -> "The code expired: connect again."
+            "access_denied" -> "Access was denied on GitHub."
+            other -> "GitHub authorization failed: #{inspect(other)}"
+          end
+
+        {:noreply, assign(socket, device: nil, github_error: message)}
+    end
+  end
 
   @impl true
   def handle_params(params, _uri, socket) do
@@ -89,6 +142,23 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   @impl true
   def handle_event("check_ollama", _params, socket), do: {:noreply, probe_ollama(socket)}
+
+  # GitHub device flow: show the code, then poll GitHub at its interval.
+  def handle_event("connect_github", _params, socket) do
+    case GitHubOAuth.start_device_flow() do
+      {:ok, device} ->
+        Process.send_after(self(), :poll_github, device.interval * 1000)
+        {:noreply, assign(socket, device: device, github_error: nil)}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, github_error: "GitHub refused to start: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("disconnect_github", _params, socket) do
+    :ok = GitHubOAuth.forget()
+    {:noreply, assign(socket, github: github_state(), device: nil)}
+  end
 
   def handle_event("disconnect_google", _params, socket) do
     :ok = OAuth.forget_refresh_token()
@@ -181,6 +251,8 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         <.index_profiles profile={@profile} profiles={@profiles} />
       </section>
 
+      <.github_section github={@github} device={@device} error={@github_error} />
+
       <div>
         <h2 class="text-lg font-semibold">Google Drive</h2>
         <p class="text-sm opacity-70">
@@ -259,6 +331,73 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         </.form>
       </details>
     </Layouts.app>
+    """
+  end
+
+  attr :github, :map, required: true
+  attr :device, :any, required: true
+  attr :error, :any, required: true
+
+  defp github_section(assigns) do
+    ~H"""
+    <section id="github" class="space-y-2">
+      <h2 class="text-lg font-semibold">GitHub</h2>
+      <p class="text-sm opacity-70">
+        A GitHub App's read-only token, for merged pull requests and private repo clones.
+      </p>
+
+      <div :if={!@github.configured} role="alert" class="alert alert-warning text-sm">
+        <.icon name="hero-exclamation-triangle" class="size-5" />
+        <span>
+          Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code>
+          (a GitHub App with Device Flow enabled) in the server's environment, then restart it.
+        </span>
+      </div>
+
+      <div :if={@github.configured} class="flex flex-wrap items-center gap-3 text-sm">
+        <span class={["badge", if(@github.source, do: "badge-success", else: "badge-ghost")]}>
+          {if @github.source, do: "connected", else: "not connected"}
+        </span>
+        <span :if={@github.login}>as <strong>@{@github.login}</strong></span>
+        <span :if={@github.source == :env} class="opacity-70">
+          (token from <code>GITHUB_TOKEN</code>, which overrides the stored one)
+        </span>
+        <button
+          :if={!@device}
+          id="connect-github"
+          phx-click="connect_github"
+          class="btn btn-primary btn-sm"
+        >
+          <.icon name="hero-link" class="size-4" />
+          {if @github.source, do: "Reconnect GitHub", else: "Connect GitHub"}
+        </button>
+        <button
+          :if={@github.source == :secrets}
+          id="disconnect-github"
+          phx-click="disconnect_github"
+          data-confirm="Forget the stored GitHub token? PR sync stops until you reconnect."
+          class="btn btn-ghost btn-sm"
+        >
+          Disconnect
+        </button>
+      </div>
+
+      <div :if={@device} id="github-device" class="rounded-box border border-base-300 p-4 text-sm">
+        <p>
+          Open <a href={@device.verification_uri} target="_blank" class="link">{@device.verification_uri}</a>
+          and enter this code:
+        </p>
+        <p class="my-2 font-mono text-2xl tracking-widest">{@device.user_code}</p>
+        <p class="flex items-center gap-2 opacity-70">
+          <span class="loading loading-spinner loading-xs"></span> Waiting for GitHub…
+        </p>
+      </div>
+
+      <div :if={@error} id="github-error" role="alert" class="alert alert-error text-sm">
+        <.icon name="hero-x-circle" class="size-5" />
+        <span>{@error}</span>
+      </div>
+    </section>
     """
   end
 
