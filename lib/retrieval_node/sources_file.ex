@@ -31,6 +31,10 @@ defmodule RetrievalNode.SourcesFile do
       **deactivated** — never deleted, so its chunks stay searchable and
       putting it back resumes from its cursor.
 
+  The Sources editor (`RetrievalNodeWeb.SourcesEditLive`) writes the file
+  with `save/3` (`encode/1`, which does not keep comments), then lets the
+  watcher apply it.
+
   Jira is still registered by `mix rn.seed` from its credentials.
   """
 
@@ -40,6 +44,7 @@ defmodule RetrievalNode.SourcesFile do
   alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
+  alias RetrievalNode.TomlWriter
 
   @file_name "sources.toml"
   @managed_types [:git_repo, :drive_folder]
@@ -47,6 +52,11 @@ defmodule RetrievalNode.SourcesFile do
   @name_format ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   @url_schemes ~w(https:// http:// ssh:// git:// file://)
   @drive_id_format ~r/\A[A-Za-z0-9_-]+\z/
+  @header """
+  # Sources indexed by Slow Henry (git repos + Google Drive), written by the
+  # Sources editor (/sources/edit). Hand edits work too, but the editor does
+  # not keep comments. Format and rules: RetrievalNode.SourcesFile.
+  """
 
   @typedoc "A source as the file wants it."
   @type entry :: %{
@@ -72,7 +82,113 @@ defmodule RetrievalNode.SourcesFile do
     with {:ok, body} <- read(path),
          {:ok, doc} <- decode(path, body) do
       parse(doc)
+    else
+      {:error, :enoent} ->
+        {:error, "cannot read #{path}: no such file (copy sources.example.toml there)"}
+
+      error ->
+        error
     end
+  end
+
+  @doc """
+  Like `load/1`, plus the SHA-256 of the bytes read, to pass back to
+  `save/3`. A missing file reads as no entries with a nil hash.
+  """
+  @spec load_with_hash(Path.t()) :: {:ok, [entry()], String.t() | nil} | {:error, String.t()}
+  def load_with_hash(path) do
+    with {:ok, body} <- read(path),
+         {:ok, doc} <- decode(path, body),
+         {:ok, entries} <- parse(doc) do
+      {:ok, entries, hash(body)}
+    else
+      {:error, :enoent} -> {:ok, [], nil}
+      error -> error
+    end
+  end
+
+  @doc "The hash `load_with_hash/1`, `save/3` and the watcher compare."
+  def hash(body), do: :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+
+  @doc """
+  Writes `entries` to `path` (temp file + rename) if the file still has
+  `expected_hash` (nil: still missing), i.e. nobody changed it since it was
+  read. Returns the new hash, `{:error, :conflict}`, or the validation or
+  write error — the file is left as it was then.
+  """
+  @spec save(Path.t(), [entry()], String.t() | nil) ::
+          {:ok, String.t()} | {:error, :conflict | String.t()}
+  def save(path, entries, expected_hash) do
+    body = encode(entries)
+
+    with {:ok, doc} <- decode(path, body),
+         {:ok, _entries} <- parse(doc),
+         :ok <- unchanged(path, expected_hash),
+         :ok <- write_file(path, body) do
+      {:ok, hash(body)}
+    end
+  end
+
+  # A read-only mount, or a single-file bind mount (which can't be renamed
+  # over), fails here.
+  defp write_file(path, body) do
+    tmp = path <> ".tmp-#{System.unique_integer([:positive])}"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(tmp, body),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(tmp)
+        {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
+    end
+  end
+
+  defp unchanged(path, expected_hash) do
+    current =
+      case File.read(path) do
+        {:ok, body} -> hash(body)
+        {:error, _} -> nil
+      end
+
+    if current == expected_hash, do: :ok, else: {:error, :conflict}
+  end
+
+  @doc """
+  The file for `entries`: `[[git]]` tables in order, then `[drive]`. Only
+  options that differ from their default are written, except Drive's scope.
+  """
+  @spec encode([entry()]) :: String.t()
+  def encode(entries) do
+    {drive, git} = Enum.split_with(entries, &(&1.source_type == :drive_folder))
+    tables = Enum.map(git, &git_table/1) ++ Enum.map(drive, &drive_table/1)
+
+    Enum.join([@header | tables], "\n")
+  end
+
+  defp git_table(e) do
+    table("[[git]]", [
+      {"name", e.name},
+      {"url", e.identifier},
+      {"active", if(e.active, do: nil, else: false)},
+      {"exclude", e.config["exclude"]},
+      {"pull_requests", e.config["pull_requests"]}
+    ])
+  end
+
+  defp drive_table(e) do
+    table("[drive]", [
+      {"my_drive", e.config["my_drive"]},
+      {"shared_with_me", e.config["shared_with_me"] == true},
+      {"include", e.config["include"]},
+      {"active", if(e.active, do: nil, else: false)}
+    ])
+  end
+
+  defp table(header, pairs) do
+    lines = for {k, v} <- pairs, not is_nil(v), do: "#{k} = #{TomlWriter.value(v)}"
+    Enum.join([header | lines], "\n") <> "\n"
   end
 
   @doc "Validates an already-decoded TOML document."
@@ -201,7 +317,7 @@ defmodule RetrievalNode.SourcesFile do
         {:ok, body}
 
       {:error, :enoent} ->
-        {:error, "cannot read #{path}: no such file (copy sources.example.toml there)"}
+        {:error, :enoent}
 
       {:error, reason} ->
         {:error, "cannot read #{path}: #{:file.format_error(reason)}"}

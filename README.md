@@ -36,6 +36,8 @@ exposed to clients as **MCP tools** over HTTP.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;
+  - `/sources/edit` — pick the GitHub repos and the Google Drive scope to
+    index (writes `sources.toml`);
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
   - `/connections` — embedding backend status (Ollama reachability, model,
@@ -137,7 +139,6 @@ The image `ghcr.io/bemble/slow-henry` is published for `linux/amd64` and
 
 ```sh
 cp .env.example .env                    # then fill it in, see below
-cp sources.example.toml sources.toml    # the sources to index
 docker compose up -d
 ```
 
@@ -148,10 +149,13 @@ else in [Configuration](#configuration) applies as is.
 
 - The UI and `/mcp` are on port 4000 (`PORT` in `.env` changes the host port).
   Pending migrations run at each start; set `RUN_MIGRATIONS=false` to skip them.
-- `sources.toml` is mounted read-only from the host. Edits are applied without
-  a restart (see [Sources](#sources)).
-- The `app-data` volume holds `secrets.toml` (OAuth tokens from
-  `/connections`), the git mirrors, and the embedding model (~1 GB). The model
+- Pick the sources to index on the **Edit sources** page (`/sources/edit`,
+  see [Sources](#sources)). They are saved in `sources.toml` in the
+  `app-data` volume. Earlier compose files mounted `./sources.toml` from the host
+  instead; to keep that file, copy it into the volume once:
+  `docker compose cp sources.toml app:/var/lib/retrieval_node/sources.toml`.
+- The `app-data` volume holds `sources.toml`, `secrets.toml` (OAuth tokens
+  from `/connections`), the git mirrors, and the embedding model (~1 GB). The model
   is downloaded at first boot, so the container reports healthy (`/healthz`)
   only after a few minutes. With `OLLAMA_ENDPOINT` set, nothing is downloaded.
   The compose file has a commented-out `ollama` service.
@@ -239,6 +243,14 @@ my_drive = true                  # Docs you own (default true)
 shared_with_me = false           # Docs shared directly with you (default false)
 include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tree)
 ```
+
+The **Edit sources** page (`/sources/edit`, from the Sources page) writes
+this file for you: GitHub repos are picked from the ones your GitHub
+connection can read (any other git URL, or a public repo, can be added by its
+URL), `exclude` patterns and Drive ids are plain text fields (a pasted Drive
+folder URL is turned into its id), and a review step shows what will change
+before saving. Saving rewrites the file without its comments, and is refused
+if the file changed on disk since the page was opened.
 
 The server applies the file when it starts and again whenever its content
 changes (checked every 30 seconds, `SOURCES_WATCH_INTERVAL` to change it); the

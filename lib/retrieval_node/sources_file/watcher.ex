@@ -10,7 +10,9 @@ defmodule RetrievalNode.SourcesFile.Watcher do
   A missing or invalid file changes **nothing**: the sources stay as they
   are (a half-saved or deleted file must not deactivate everything). The
   error is logged and exposed through `status/0` for the UI, and the next
-  valid version is applied as usual.
+  valid version is applied as usual. A missing file is not an error (a fresh
+  install has none until the Sources editor writes it): `status/0` reports
+  `missing: true`.
 
   Disabled in tests and in the mix tasks that boot the app (`rn.seed`,
   `rn.sources`): `config :retrieval_node, :sources_watch, false`.
@@ -22,11 +24,12 @@ defmodule RetrievalNode.SourcesFile.Watcher do
   alias RetrievalNode.SourcesFile
 
   @default_interval_ms 30_000
+  @status_keys [:path, :applied_at, :hash, :changes, :error, :missing]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
-  `%{path:, applied_at:, hash:, changes:, error:}` — `changes` is the number
+  `%{path:, applied_at:, hash:, changes:, error:, missing:}` — `changes` is the number
   of sources changed by the last apply; `nil` when the watcher isn't running.
   """
   def status do
@@ -44,7 +47,8 @@ defmodule RetrievalNode.SourcesFile.Watcher do
       hash: nil,
       applied_at: nil,
       changes: nil,
-      error: nil
+      error: nil,
+      missing: false
     }
 
     # First apply right after boot, outside init so the supervisor isn't held.
@@ -61,18 +65,26 @@ defmodule RetrievalNode.SourcesFile.Watcher do
 
   @impl true
   def handle_call(:status, _from, state),
-    do: {:reply, Map.take(state, [:path, :applied_at, :hash, :changes, :error]), state}
+    do: {:reply, Map.take(state, @status_keys), state}
 
   def handle_call(:check, _from, state) do
     state = check(state)
-    {:reply, Map.take(state, [:path, :applied_at, :hash, :changes, :error]), state}
+    {:reply, Map.take(state, @status_keys), state}
   end
 
   defp check(state) do
     case File.read(state.path) do
       {:ok, body} ->
-        hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+        hash = SourcesFile.hash(body)
+        state = %{state | missing: false}
         if hash == state.hash, do: state, else: apply_file(state, hash)
+
+      {:error, :enoent} when state.missing ->
+        state
+
+      {:error, :enoent} ->
+        Logger.info("no #{state.path} yet, sources left unchanged")
+        %{state | missing: true, hash: nil, error: nil}
 
       {:error, reason} ->
         report_error(state, "cannot read #{state.path}: #{:file.format_error(reason)}")
