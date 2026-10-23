@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1](https://github.com/bemble/slow-henry/compare/v0.2.0...v0.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **build:** always prefetch, even when _build has the deps compiled ([4439afe](https://github.com/bemble/slow-henry/commit/4439afe5ee28811bb4d024e9138ea75c19fd7a09))
+* **build:** fetch GitHub release artifacts with curl on OTP 29.1 ([3fae967](https://github.com/bemble/slow-henry/commit/3fae967823a7daba43326aaaac981534e7aa6739))
+* sync with upstream bbangert/slow-henry ([0f9041b](https://github.com/bemble/slow-henry/commit/0f9041beb70564dc3d52dad52849197835d24ead))
+* sync with upstream bbangert/slow-henry ([5ca6fdc](https://github.com/bemble/slow-henry/commit/5ca6fdc7f33418acead5e0a4cc20c2985f666603))
+
 ## [0.2.0](https://github.com/bemble/slow-henry/compare/v0.1.0...v0.2.0) (2026-10-23)
 
 
