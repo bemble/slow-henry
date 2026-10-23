@@ -58,6 +58,8 @@ config :retrieval_node, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        {"*/15 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "git"}},
+       # Merged PRs of the git sources that opted in (pull_requests = true).
+       {"40 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "git_prs"}},
        {"0 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "jira"}},
        {"*/30 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "drive"}},
        # Daily full Drive pass (scope/classification drift the changes feed can't

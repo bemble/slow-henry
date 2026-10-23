@@ -2,7 +2,7 @@ defmodule RetrievalNode.SourcesFileTest do
   use RetrievalNode.DataCase, async: true
   use Oban.Testing, repo: RetrievalNode.Repo
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.SourcesFile
@@ -65,7 +65,7 @@ defmodule RetrievalNode.SourcesFileTest do
       assert {:error, "[[git]] #1: unknown key(s) branch"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"branch" => "main"})]})
 
-      assert {:error, "[[git]] #1: `active` must be true or false"} =
+      assert {:error, "[[git]] #1: `active` and `pull_requests` must be true or false"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"active" => "no"})]})
     end
 
@@ -75,6 +75,65 @@ defmodule RetrievalNode.SourcesFileTest do
 
       assert {:error, "duplicate url " <> _} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a), git("other", @url_a)]})
+    end
+  end
+
+  describe "[[git]] options" do
+    test "exclude and pull_requests are stored only when set" do
+      assert {:ok, [%{config: config}]} = SourcesFile.parse(%{"git" => [git("adr", @url_a)]})
+      assert config == %{}
+
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{
+                 "git" => [
+                   git("core", @url_a, %{
+                     "exclude" => [
+                       "homeassistant/components/*",
+                       "!homeassistant/components/cloud"
+                     ],
+                     "pull_requests" => true
+                   })
+                 ]
+               })
+
+      assert config == %{
+               "exclude" => ["homeassistant/components/*", "!homeassistant/components/cloud"],
+               "pull_requests" => true
+             }
+
+      assert {:error, "[[git]] #1: `exclude` must be a list of path patterns"} =
+               SourcesFile.parse(%{"git" => [git("core", @url_a, %{"exclude" => "docs"})]})
+    end
+
+    test "a new repo with pull_requests gets both syncs" do
+      {:ok, entries} =
+        SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"pull_requests" => true})]})
+
+      assert {:ok, [{:add, _}]} = SourcesFile.apply(entries)
+      source = Repo.get_by!(Source, identifier: @url_a)
+      assert_enqueued(worker: RepoSync, args: %{"source_id" => source.id})
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+    end
+
+    test "changing exclude queues a full pass; turning on pull_requests queues only a PR sync" do
+      source = source!("adr", @url_a)
+
+      {:ok, entries} =
+        SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"exclude" => ["docs"]})]})
+
+      SourcesFile.apply(entries)
+      assert_enqueued(worker: RepoSync, args: %{"source_id" => source.id, "mode" => "full"})
+      refute_enqueued(worker: PullRequestSync)
+      Repo.delete_all(Oban.Job)
+
+      {:ok, entries} =
+        SourcesFile.parse(%{
+          "git" => [git("adr", @url_a, %{"exclude" => ["docs"], "pull_requests" => true})]
+        })
+
+      SourcesFile.apply(entries)
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
     end
   end
 

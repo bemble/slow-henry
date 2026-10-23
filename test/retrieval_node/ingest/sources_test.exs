@@ -48,6 +48,29 @@ defmodule RetrievalNode.Ingest.SourcesTest do
       :ok
     end
 
+    test "git_prs fans out only to git sources with pull_requests = true" do
+      opted =
+        Repo.insert!(%Source{
+          source_type: :git_repo,
+          name: "with-prs",
+          identifier: "https://github.com/o/a.git",
+          config: %{"pull_requests" => true}
+        })
+
+      Repo.insert!(%Source{
+        source_type: :git_repo,
+        name: "plain",
+        identifier: "https://github.com/o/b.git"
+      })
+
+      assert :ok = perform_job(SyncScheduler, %{"kind" => "git_prs"})
+
+      assert [%{args: %{"source_id" => id}}] =
+               all_enqueued(worker: RetrievalNode.Ingest.Workers.PullRequestSync)
+
+      assert id == opted.id
+    end
+
     test "fans out one sync job per active, allow-policy source of the kind" do
       git = Repo.insert!(%Source{source_type: :git_repo, name: "g", identifier: "file:///g"})
 

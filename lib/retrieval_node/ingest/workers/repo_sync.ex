@@ -57,10 +57,12 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
 
   require Logger
 
+  import Ecto.Query
+
   alias RetrievalNode.Chunking
-  alias RetrievalNode.Ingest.{GitMirror, PendingChunks, SourceOwner}
+  alias RetrievalNode.Ingest.{GitMirror, PathFilter, PendingChunks, SourceOwner}
   alias RetrievalNode.Repo
-  alias RetrievalNode.Retrieval.{Source, SyncState}
+  alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
   @lang_by_ext %{
     "py" => "python",
@@ -75,11 +77,15 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
   }
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"source_id" => source_id}}) do
+  def perform(%Oban.Job{args: %{"source_id" => source_id} = args}) do
     source = Repo.get!(Source, source_id)
     sync_state = get_or_create_sync_state(source_id)
     slug = repo_slug(source)
-    last_sha = Map.get(sync_state.cursor || %{}, "last_sha")
+
+    # "full" re-reads the whole tree instead of the diff since last_sha — what
+    # an `exclude` change needs, since it affects files that didn't change.
+    last_sha =
+      if args["mode"] == "full", do: nil, else: Map.get(sync_state.cursor || %{}, "last_sha")
 
     with {:ok, _path} <- GitMirror.ensure_mirror(slug, source.identifier),
          {:ok, new_sha} <- GitMirror.head_sha(slug) do
@@ -110,15 +116,50 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
       # still exists but is unreadable ({:error, :file_too_large}) must be skipped,
       # never mistaken for a deletion and pruned.
       {deleted, present} = Enum.split_with(entries, fn {status, _} -> status == :deleted end)
+      {present, excluded} = split_excluded(source, present)
 
       deletion_rows =
-        Enum.map(deleted, fn {_status, path} -> deletion_row(source, slug, path) end)
+        Enum.map(deleted ++ excluded, fn {_status, path} -> deletion_row(source, slug, path) end)
 
       with {:ok, content_rows} <-
              build_rows(source, slug, Enum.map(present, &elem(&1, 1)), new_sha) do
         stage_and_advance(source, sync_state, new_sha, deletion_rows ++ content_rows)
       end
     end
+  end
+
+  # Paths matching the source's `exclude` patterns are never staged as content.
+  # Those that are already indexed (or staged) get a deletion entry so a new
+  # pattern reconciles them away; the others are dropped, so a big excluded
+  # tree costs nothing on a first sync.
+  defp split_excluded(source, present) do
+    case PathFilter.compile(Map.get(source.config || %{}, "exclude", [])) do
+      [] ->
+        {present, []}
+
+      filter ->
+        {excluded, kept} =
+          Enum.split_with(present, fn {_, path} -> PathFilter.excluded?(filter, path) end)
+
+        known = known_paths(source.id)
+        {kept, Enum.filter(excluded, fn {_, path} -> MapSet.member?(known, path) end)}
+    end
+  end
+
+  defp known_paths(source_id) do
+    indexed =
+      from c in Chunk,
+        where: c.source_id == ^source_id,
+        distinct: true,
+        select: fragment("?->>'path'", c.metadata)
+
+    staged =
+      from p in PendingChunk,
+        where: p.source_id == ^source_id and p.status == "raw",
+        distinct: true,
+        select: fragment("?->>'path'", p.metadata)
+
+    MapSet.new(Repo.all(indexed) ++ Repo.all(staged))
   end
 
   defp deletion_row(source, slug, path) do
@@ -163,14 +204,31 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
     |> Repo.update!()
   end
 
+  # PullRequestSync shares this row (prs_updated_since) and may run at the
+  # same time: set only last_sha instead of rewriting the whole cursor.
   defp advance_watermark!(sync_state, new_sha) do
-    sync_state
-    |> SyncState.changeset(%{
-      cursor: Map.put(sync_state.cursor || %{}, "last_sha", new_sha),
-      status: :idle,
-      last_synced_at: DateTime.utc_now()
-    })
-    |> Repo.update!()
+    {1, _} =
+      Repo.update_all(
+        from(s in SyncState,
+          where: s.id == ^sync_state.id,
+          update: [
+            set: [
+              cursor:
+                fragment(
+                  "jsonb_set(coalesce(?, '{}'::jsonb), '{last_sha}', to_jsonb(?::text))",
+                  s.cursor,
+                  ^new_sha
+                ),
+              status: :idle,
+              last_synced_at: ^DateTime.utc_now(),
+              updated_at: ^DateTime.utc_now()
+            ]
+          ]
+        ),
+        []
+      )
+
+    :ok
   end
 
   # Build content rows, halting on any *unexpected* show error so the job retries

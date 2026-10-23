@@ -15,6 +15,15 @@ name = "old-repo"
 url = "https://github.com/my-org/old-repo.git"
 active = false
 
+# A big repo, keeping only part of it, plus the messages of its merged PRs.
+# `exclude` is .gitignore-style: `*` stays in one segment, `**` crosses them,
+# a directory covers its whole tree, `!` re-includes, the last match wins.
+[[git]]
+name = "core"
+url = "https://github.com/home-assistant/core.git"
+exclude = ["homeassistant/components/*", "!homeassistant/components/cloud"]
+pull_requests = true   # merged PRs: description, comments, reviews (default false)
+
 # Google Drive: Docs you own, optionally the Docs shared directly with you,
 # plus the shared drives / folders listed in `include` (ids from their URLs,
 # e.g. drive.google.com/drive/folders/<ID>; folders shared with you are only

@@ -9,12 +9,14 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
 
   @kinds %{
     "git" => {:git_repo, RepoSync},
+    # Merged PRs, only for git sources with `pull_requests = true`.
+    "git_prs" => {:git_repo, PullRequestSync},
     "jira" => {:jira_project, JiraSync},
     "drive" => {:drive_folder, DriveSync}
   }
@@ -25,6 +27,7 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
 
     Source
     |> where([s], s.source_type == ^source_type and s.active == true and s.policy == :allow)
+    |> only_opted_in(kind)
     |> Repo.all()
     |> Enum.reduce_while(:ok, fn source, :ok ->
       # A unique-constraint overlap comes back as {:ok, %{conflict?: true}} — fine.
@@ -39,4 +42,9 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
       end
     end)
   end
+
+  defp only_opted_in(query, "git_prs"),
+    do: where(query, [s], fragment("(?->>'pull_requests')::boolean IS TRUE", s.config))
+
+  defp only_opted_in(query, _kind), do: query
 end

@@ -68,7 +68,6 @@ defmodule RetrievalNode.Ingest.Drive do
 
   # --- listing ---
 
-  @doc "Google Docs owned by the user (My Drive)."
   @doc "Google Docs shared directly with the user (not the contents of shared folders)."
   def shared_with_me_docs(label_id) do
     list_files(
@@ -78,6 +77,7 @@ defmodule RetrievalNode.Ingest.Drive do
     )
   end
 
+  @doc "Google Docs owned by the user (My Drive)."
   def my_drive_docs(label_id) do
     list_files(
       "'me' in owners and mimeType = '#{@doc_mime}' and trashed = false",

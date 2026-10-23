@@ -90,6 +90,8 @@ Git repos and the Google Drive scope are declared in `sources.toml`
 name = "my-repo"                               # mirror slug + MCP `repo` filter
 url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # active = false                               # keep the chunks, stop syncing
+# exclude = ["docs/*", "!docs/adr"]            # paths to leave out (see below)
+# pull_requests = true                         # also index merged PRs (default false)
 
 [drive]
 my_drive = true                  # Docs you own (default true)
@@ -101,6 +103,20 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 mix rn.sources --dry-run   # print what would change
 mix rn.sources             # apply: add, update, deactivate
 ```
+
+`exclude` uses `.gitignore`-style patterns, anchored at the repo root: `*`
+stays within one path segment, `**` crosses segments, a pattern matching a
+directory covers everything below it, `!` re-includes (even below an excluded
+directory), and the last matching pattern wins. For example
+`["homeassistant/components/*", "!homeassistant/components/cloud"]` keeps
+only the `cloud` integration. Changing `exclude` triggers a full pass that
+indexes newly included files and removes newly excluded ones.
+
+`pull_requests = true` indexes the repo's **merged** pull requests through the
+`gh` CLI (`gh auth login` for the user running the server): one document per
+PR, under the virtual path `pulls/<number>`, with its title, author, merge
+date, URL, description, and the human comments and reviews (bots left out).
+They are synced hourly, picking up PRs edited or commented after merge.
 
 New sources get their first sync right away, then git syncs every 15 minutes
 and Drive every 30 minutes (plus a full Drive pass daily at 04:15). A source

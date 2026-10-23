@@ -47,6 +47,61 @@ defmodule RetrievalNode.Ingest.Workers.RepoSyncTest do
     git!(src, ["commit", "-qm", "c"])
   end
 
+  defp commit_tree(src, files) do
+    Enum.each(files, fn {path, _} -> File.mkdir_p!(Path.dirname(Path.join(src, path))) end)
+    commit(src, files)
+  end
+
+  defp staged(source, status) do
+    Repo.all(
+      from p in PendingChunk,
+        where: p.source_id == ^source.id and p.status == ^status,
+        select: p.metadata["path"],
+        order_by: p.metadata["path"]
+    )
+  end
+
+  @ha_tree [
+    {"homeassistant/core.py", "class HomeAssistant: pass\n"},
+    {"homeassistant/components/hue/light.py", "def hue(): pass\n"},
+    {"homeassistant/components/cloud/http_api.py", "def cloud(): pass\n"}
+  ]
+
+  test "exclude patterns keep excluded paths out, with ! exceptions", ctx do
+    ctx.source
+    |> Source.update_changeset(%{
+      config: %{"exclude" => ["homeassistant/components/*", "!homeassistant/components/cloud"]}
+    })
+    |> Repo.update!()
+
+    commit_tree(ctx.src, @ha_tree)
+    assert :ok = perform_job(RepoSync, %{"source_id" => ctx.source.id})
+
+    assert staged(ctx.source, "raw") == [
+             "homeassistant/components/cloud/http_api.py",
+             "homeassistant/core.py"
+           ]
+
+    # Never indexed, so nothing to reconcile: no deletion entries either.
+    assert staged(ctx.source, "deleted") == []
+  end
+
+  test "a full pass after adding exclude patterns reconciles newly excluded files", ctx do
+    commit_tree(ctx.src, @ha_tree)
+    assert :ok = perform_job(RepoSync, %{"source_id" => ctx.source.id})
+    assert length(staged(ctx.source, "raw")) == 3
+
+    ctx.source
+    |> Source.update_changeset(%{
+      config: %{"exclude" => ["homeassistant/components/*", "!homeassistant/components/cloud"]}
+    })
+    |> Repo.update!()
+
+    # Nothing changed in git: only a full pass revisits the tree.
+    assert :ok = perform_job(RepoSync, %{"source_id" => ctx.source.id, "mode" => "full"})
+    assert staged(ctx.source, "deleted") == ["homeassistant/components/hue/light.py"]
+  end
+
   test "first sync stages a raw row per file, advances the watermark", ctx do
     commit(ctx.src, [{"a.py", "def a(): pass\n"}, {"b.py", "def b(): pass\n"}])
 
