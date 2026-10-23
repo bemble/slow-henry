@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/bemble/slow-henry/compare/v0.3.0...v0.4.0) (2026-10-23)
+
+
+### Features
+
+* show the app version and MCP setup on the Connections page ([1f9c6d5](https://github.com/bemble/slow-henry/commit/1f9c6d5db7ad560af0e78262148bfc96b3d9b467))
+* show the app version and MCP setup on the Connections page ([63ca5c4](https://github.com/bemble/slow-henry/commit/63ca5c483eec96598403232a5a2e1ec7a9415e2e))
+
 ## [0.3.0](https://github.com/bemble/slow-henry/compare/v0.2.1...v0.3.0) (2026-10-23)
 
 
