@@ -32,6 +32,8 @@ defmodule RetrievalNodeWeb.Router do
     live "/", SourcesLive, :index
     live "/sources/:id", SourceLive, :show
     live "/search", SearchLive, :index
+    live "/google", GoogleLive, :index
+    live "/google/callback", GoogleLive, :callback
   end
 
   # Readiness probe — top-level (not under /api), no auth: a LAN-only slice

@@ -1,40 +1,50 @@
 defmodule RetrievalNode.SourcesFile do
   @moduledoc """
-  `sources.toml` is the source of truth for the git repos that are indexed.
-  It is git-ignored (it names private repos); `sources.example.toml` is the
-  template.
+  `sources.toml` is the source of truth for the git repos and the Google Drive
+  scope that are indexed. It is git-ignored (it names private repos and Drive
+  ids); `sources.example.toml` is the template.
 
       [[git]]
       name = "adr"                                  # mirror slug + MCP `repo` filter
-      url = "https://github.com/NabuCasa/adr.git"   # clone URL (the source identity)
+      url = "https://github.com/my-org/adr.git"     # clone URL (the source identity)
       # active = false                              # keep indexed chunks, stop syncing
+
+      [drive]
+      my_drive = true                               # Docs you own (default true)
+      include = ["0AbC...", "1xYz..."]              # shared drive or folder ids
+      # active = false
+
+  Drive docs are further filtered by their Classification label (see
+  `Ingest.DrivePolicy`).
 
   `apply/1` aligns the `sources` table with the file:
 
     * an entry with no matching source is **added** and gets its first sync;
-    * a known one whose name or `active` flag differs is **updated**;
-      re-activation triggers a sync;
-    * a git source in the database but no longer in the file is
+    * a known one whose name, `active` flag or Drive scope differs is
+      **updated**; re-activation, or a changed Drive scope, triggers a sync;
+    * a git or Drive source in the database but no longer in the file is
       **deactivated** — never deleted, so its chunks stay searchable and
       putting it back resumes from its cursor.
 
-  Jira and Drive are still registered by `mix rn.seed` from their credentials.
+  Jira is still registered by `mix rn.seed` from its credentials.
   """
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.RepoSync
+  alias RetrievalNode.Ingest.Workers.{DriveSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
 
   @default_path "sources.toml"
-  @managed_types [:git_repo]
+  @managed_types [:git_repo, :drive_folder]
+  @drive_identifier "drive:me"
   @name_format ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   @url_schemes ~w(https:// http:// ssh:// git:// file://)
+  @drive_id_format ~r/\A[A-Za-z0-9_-]+\z/
 
   @typedoc "A source as the file wants it."
   @type entry :: %{
-          source_type: :git_repo,
+          source_type: :git_repo | :drive_folder,
           identifier: String.t(),
           name: String.t(),
           active: boolean(),
@@ -65,8 +75,9 @@ defmodule RetrievalNode.SourcesFile do
          {:ok, raw} <- git_tables(doc),
          {:ok, git} <- collect(raw),
          :ok <- unique(git, :name),
-         :ok <- unique(git, :identifier) do
-      {:ok, git}
+         :ok <- unique(git, :identifier),
+         {:ok, drive} <- drive_entry(Map.get(doc, "drive")) do
+      {:ok, git ++ List.wrap(drive)}
     end
   end
 
@@ -100,7 +111,7 @@ defmodule RetrievalNode.SourcesFile do
 
   @doc """
   Applies `plan/1` in one transaction, then enqueues a sync for every added or
-  re-activated source.
+  re-activated source (and a full Drive pass when its scope changed).
   Requires a running Oban instance.
   """
   @spec apply([entry()]) :: {:ok, [change()]} | {:error, term()}
@@ -110,7 +121,7 @@ defmodule RetrievalNode.SourcesFile do
     result = Repo.transaction(fn -> Enum.map(changes, &write!/1) end)
 
     with {:ok, written} <- result do
-      for {change, source} <- written, needs_sync?(change), do: enqueue!(source)
+      for {change, source} <- written, args = sync_args(change), do: enqueue!(source, args)
       {:ok, changes}
     end
   end
@@ -136,12 +147,23 @@ defmodule RetrievalNode.SourcesFile do
 
   defp write({:unchanged, s}), do: {:ok, s}
 
-  defp needs_sync?({:add, e}), do: e.active
-  defp needs_sync?({:update, s, e}), do: e.active and not s.active
-  defp needs_sync?(_), do: false
+  # nil = no sync; otherwise the extra job args.
+  defp sync_args({:add, e}), do: if(e.active, do: %{})
 
-  defp enqueue!(source) do
-    {:ok, _job} = Oban.insert(RepoSync.new(%{"source_id" => source.id}))
+  defp sync_args({:update, s, e}) do
+    cond do
+      not e.active -> nil
+      e.source_type == :drive_folder and (s.config || %{}) != e.config -> %{"mode" => "full"}
+      not s.active -> %{}
+      true -> nil
+    end
+  end
+
+  defp sync_args(_), do: nil
+
+  defp enqueue!(source, args) do
+    worker = if source.source_type == :drive_folder, do: DriveSync, else: RepoSync
+    {:ok, _job} = Oban.insert(worker.new(Map.put(args, "source_id", source.id)))
   end
 
   # --- reading / validation ---
@@ -168,7 +190,7 @@ defmodule RetrievalNode.SourcesFile do
   end
 
   defp known_sections(doc) do
-    case Map.keys(doc) -- ~w(git) do
+    case Map.keys(doc) -- ~w(git drive) do
       [] -> :ok
       unknown -> {:error, "unknown section(s) #{Enum.join(unknown, ", ")}"}
     end
@@ -220,6 +242,57 @@ defmodule RetrievalNode.SourcesFile do
   end
 
   defp git_entry(_), do: {:error, "`name` and `url` are required strings"}
+
+  defp drive_entry(nil), do: {:ok, nil}
+
+  defp drive_entry(%{} = item) do
+    my_drive = Map.get(item, "my_drive", true)
+    include = Map.get(item, "include", [])
+    active = Map.get(item, "active", true)
+    unknown = Map.keys(item) -- ~w(my_drive include active)
+
+    case drive_error(unknown, my_drive, include, active) do
+      nil ->
+        {:ok,
+         %{
+           source_type: :drive_folder,
+           identifier: @drive_identifier,
+           name: "Google Drive",
+           active: active,
+           config: %{"my_drive" => my_drive, "include" => include}
+         }}
+
+      msg ->
+        {:error, "[drive]: " <> msg}
+    end
+  end
+
+  defp drive_entry(_), do: {:error, "`drive` must be a table ([drive])"}
+
+  defp drive_error([_ | _] = unknown, _my_drive, _include, _active),
+    do: "unknown key(s) #{Enum.join(unknown, ", ")}"
+
+  defp drive_error(_, my_drive, _include, active)
+       when not is_boolean(my_drive) or not is_boolean(active),
+       do: "`my_drive` and `active` must be true or false"
+
+  defp drive_error(_, my_drive, include, _active) do
+    cond do
+      not is_list(include) or not Enum.all?(include, &drive_id?/1) ->
+        "`include` must be a list of Drive ids"
+
+      length(Enum.uniq(include)) != length(include) ->
+        "duplicate id in `include`"
+
+      not my_drive and include == [] ->
+        "nothing to index (my_drive = false and no include)"
+
+      true ->
+        nil
+    end
+  end
+
+  defp drive_id?(id), do: is_binary(id) and Regex.match?(@drive_id_format, id)
 
   defp unique(entries, key) do
     case entries

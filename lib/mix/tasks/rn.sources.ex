@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Rn.Sources do
-  @shortdoc "Aligns the registered git sources with sources.toml"
+  @shortdoc "Aligns the registered git and Drive sources with sources.toml"
 
   @moduledoc """
   Reads `sources.toml` (or `SOURCES_FILE`, or `--file PATH`) and aligns the
@@ -53,14 +53,15 @@ defmodule Mix.Tasks.Rn.Sources do
   end
 
   defp describe({:add, e}),
-    do: "+ #{e.name} (#{e.identifier})#{if e.active, do: ", first sync", else: ", inactive"}"
+    do: "+ #{e.name} (#{label(e)})#{if e.active, do: ", first sync", else: ", inactive"}"
 
   defp describe({:update, s, e}) do
     diffs =
       [
         s.name != e.name && "name #{s.name} -> #{e.name}",
         s.active != e.active && "active #{s.active} -> #{e.active}",
-        (e.active and not s.active) && "sync"
+        (s.config || %{}) != e.config && "scope #{inspect(e.config)}",
+        (e.active and (not s.active or (s.config || %{}) != e.config)) && "sync"
       ]
       |> Enum.filter(& &1)
 
@@ -69,4 +70,7 @@ defmodule Mix.Tasks.Rn.Sources do
 
   defp describe({:deactivate, s}), do: "- #{s.name}: not in file, deactivated (chunks kept)"
   defp describe({:unchanged, s}), do: "= #{s.name}"
+
+  defp label(%{source_type: :drive_folder, config: config}), do: "drive #{inspect(config)}"
+  defp label(e), do: e.identifier
 end

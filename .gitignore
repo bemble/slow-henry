@@ -48,6 +48,6 @@ retrieval_node-*.tar
 /priv/static/cache_manifest.json
 /assets/node_modules/
 
-# The real list of indexed sources (private repo names).
+# The real list of indexed sources (private repo names, Drive ids).
 # Template: sources.example.toml
 /sources.toml

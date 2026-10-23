@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Rn.Seed do
-  @shortdoc "Seeds the thin corpus sources (git/jira/drive) and enqueues their first sync"
+  @shortdoc "Seeds the thin corpus sources (git/jira) and enqueues their first sync"
 
   @moduledoc """
   Registers the thin-corpus ingest sources (design-mcp.md Phase 9 Task 1) so the
@@ -13,20 +13,21 @@ defmodule Mix.Tasks.Rn.Seed do
 
       mix rn.seed --git-url file:///path/to/some/repo.git --repo some-repo
 
-  ## Jira / Drive (only when credentials are present)
+  Git repos and Google Drive are normally declared in `sources.toml` and
+  applied with `mix rn.sources`; this task remains for ad-hoc git seeding and
+  Jira.
 
-  Neither client reads credentials from the environment on its own (see
-  `RetrievalNode.Ingest.Jira`/`Drive` moduledocs — they read
-  `config :retrieval_node, :jira/:drive`, normally set at deploy time). This
+  ## Jira (only when credentials are present)
+
+  The client doesn't read credentials from the environment on its own (see
+  `RetrievalNode.Ingest.Jira` — it reads `config :retrieval_node, :jira`,
+  normally set at deploy time). This
   task is the one place that maps env vars to that config, so credentials can
   be supplied straight from the shell for a first seed:
 
     * Jira: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`
       (all four required — the last becomes the JQL project and the source's
       `identifier`).
-    * Drive: `DRIVE_ACCESS_TOKEN` (required), `DRIVE_FOLDER_ID` (optional label
-      for the source's `identifier`/name; the Changes API syncs the whole
-      Drive regardless, so this is a display slug, not a filter).
 
   Whichever process actually *runs* the enqueued sync job (the dev server or
   the production Oban instance) needs these same env vars at its own boot —
@@ -53,13 +54,12 @@ defmodule Mix.Tasks.Rn.Seed do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{JiraSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
   @default_repo_name "slow-henry"
   @default_git_url "file:///workspaces/slow-henry/.git"
-  @default_drive_identifier "root"
 
   @switches [git_url: :string, repo: :string, status: :boolean]
 
@@ -122,7 +122,6 @@ defmodule Mix.Tasks.Rn.Seed do
   defp seed(opts) do
     seed_git(opts)
     seed_jira()
-    seed_drive()
 
     Mix.shell().info("""
 
@@ -178,38 +177,6 @@ defmodule Mix.Tasks.Rn.Seed do
 
       _ ->
         {:error, @jira_vars}
-    end
-  end
-
-  @drive_vars ~w(DRIVE_ACCESS_TOKEN)
-
-  defp seed_drive do
-    case drive_env() do
-      {:ok, %{access_token: access_token, folder_id: folder_id}} ->
-        Application.put_env(:retrieval_node, :drive, access_token: access_token)
-
-        {:ok, source} =
-          upsert_source(%{
-            source_type: :drive_folder,
-            name: "Drive: #{folder_id}",
-            identifier: folder_id
-          })
-
-        enqueue!(DriveSync, source, "Drive folder #{inspect(folder_id)}")
-
-      {:error, _missing} ->
-        skip("Drive", @drive_vars)
-    end
-  end
-
-  defp drive_env do
-    case System.get_env("DRIVE_ACCESS_TOKEN") do
-      token when is_binary(token) ->
-        folder_id = System.get_env("DRIVE_FOLDER_ID") || @default_drive_identifier
-        {:ok, %{access_token: token, folder_id: folder_id}}
-
-      _ ->
-        {:error, @drive_vars}
     end
   end
 

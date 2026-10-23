@@ -138,11 +138,16 @@ defmodule RetrievalNode.Ingest.ScrubberTest do
       assert_receive {:degraded, %{count: 1}}
     end
 
-    test "jira/drive text is scanned by regex directly" do
+    test "jira text is scanned by regex directly" do
       assert {:ok, %{scrub_mode: "regex", secrets_status: :clean}} =
                Scrubber.scrub("a normal jira comment", :jira_project)
 
       assert {:ok, %{scrub_mode: "regex", secrets_status: :redacted}} =
+               Scrubber.scrub("password = #{@aws_key}", :jira_project)
+    end
+
+    test "drive text goes through the gitleaks path, like git" do
+      assert {:ok, %{scrub_mode: "gitleaks" <> _, secrets_status: :redacted}} =
                Scrubber.scrub("password = #{@aws_key}", :drive_folder)
     end
 

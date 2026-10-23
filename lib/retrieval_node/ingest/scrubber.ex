@@ -7,13 +7,13 @@ defmodule RetrievalNode.Ingest.Scrubber do
 
   Policy (`design-oban.md` §5.1):
 
-    * **git** content → `gitleaks`. Exit 0 = clean; exit 1 = **secrets found**,
+    * **git** and **drive** content → `gitleaks`. Exit 0 = clean; exit 1 = **secrets found**,
       which is *normal operation* — redact each finding in place (`[REDACTED:type]`),
       record an audit row, and PROCEED (a redacted chunk is still useful). Any other
       exit, or a missing/broken binary, is the *only* failure case: degrade to the
       regex scanner (a weaker but real scan) and emit a loud telemetry signal —
       never silently skip scanning.
-    * **jira/drive** text → the regex scanner directly.
+    * **jira** text → the regex scanner directly.
 
   A high-confidence secret that survives redaction — or content that no scanner
   could run over at all — is discarded (`{:cancel, ...}`) rather than indexed —
@@ -85,7 +85,8 @@ defmodule RetrievalNode.Ingest.Scrubber do
     {:cancel, :content_too_large}
   end
 
-  def scrub(content, :git_repo) when is_binary(content) do
+  def scrub(content, source_type)
+      when is_binary(content) and source_type in [:git_repo, :drive_folder] do
     case gitleaks_scan(content) do
       {:ok, findings} ->
         finish(content, findings, "gitleaks")
@@ -99,7 +100,7 @@ defmodule RetrievalNode.Ingest.Scrubber do
   end
 
   def scrub(content, source_type)
-      when is_binary(content) and source_type in [:jira_project, :drive_folder] do
+      when is_binary(content) and source_type == :jira_project do
     regex_scrub(content, "regex")
   end
 
