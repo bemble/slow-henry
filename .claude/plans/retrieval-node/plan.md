@@ -13,6 +13,13 @@ Phoenix, ingested incrementally by Oban, embedded via Bumblebee/Nx.Serving
 self-hosted ARM (glibc); dev = x86-64. **First vertical slice = all three sources
 thin, LAN-only, no auth.**
 
+> **Fork continuation** (`bemble/slow-henry`, 2026-10): this plan covers the
+> original build. Work done on the fork since is planned in
+> `../fork-foundations/plan.md` (env config, inspection UI, sources.toml),
+> `../google-drive/plan.md`, `../git-sources/plan.md` (exclude, merged PRs) and
+> `../ollama-embeddings/plan.md`; problems met along the way are under
+> `.claude/solutions/`.
+
 ---
 
 ## ⚠️ Canonical reconciliation decisions (read first)
