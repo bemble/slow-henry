@@ -55,7 +55,7 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
       (Map.get(scope, :shared_with_me, false) and shared_with_me?(file)) or
       MapSet.member?(scope.drives, file["driveId"]) or
       (MapSet.size(scope.folders) > 0 and
-         below?(file["parents"] || [], scope.folders, parents_of, 0, MapSet.new()))
+         below?(file["parents"] || [], scope.folders, parents_of, 0, %{}))
   end
 
   @doc "Indexable = live doc + in scope + classification allowed."
@@ -70,6 +70,8 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   # not on the contents of a shared folder.
   defp shared_with_me?(file), do: is_binary(file["sharedWithMeTime"]) and not owned_by_me?(file)
 
+  # `seen` is a plain map (id => true): a MapSet seeded with MapSet.new() trips
+  # Dialyzer's opaque-type checks on OTP 29.
   defp below?([], _folders, _parents_of, _depth, _seen), do: false
   defp below?(_ids, _folders, _parents_of, depth, _seen) when depth > @max_depth, do: false
 
@@ -77,11 +79,11 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
     if Enum.any?(ids, &MapSet.member?(folders, &1)) do
       true
     else
-      seen = MapSet.union(seen, MapSet.new(ids))
+      seen = Map.merge(seen, Map.from_keys(ids, true))
 
       ids
       |> Enum.flat_map(parents_of)
-      |> Enum.reject(&MapSet.member?(seen, &1))
+      |> Enum.reject(&Map.has_key?(seen, &1))
       |> Enum.uniq()
       |> below?(folders, parents_of, depth + 1, seen)
     end
