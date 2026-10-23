@@ -1,8 +1,9 @@
 defmodule RetrievalNode.SourcesFile do
   @moduledoc """
   `sources.toml` is the source of truth for the git repos and the Google Drive
-  scope that are indexed. It is git-ignored (it names private repos and Drive
-  ids); `sources.example.toml` is the template.
+  scope that are indexed. It lives in the data dir (`DATA_DIR/sources.toml`,
+  git-ignored: it names private repos and Drive ids; `SOURCES_FILE`
+  overrides the path); `sources.example.toml` is the template.
 
       [[git]]
       name = "adr"                                  # mirror slug + MCP `repo` filter
@@ -40,7 +41,7 @@ defmodule RetrievalNode.SourcesFile do
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
 
-  @default_path "sources.toml"
+  @file_name "sources.toml"
   @managed_types [:git_repo, :drive_folder]
   @drive_identifier "drive:me"
   @name_format ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
@@ -61,8 +62,9 @@ defmodule RetrievalNode.SourcesFile do
           | {:deactivate, Source.t()}
           | {:unchanged, Source.t()}
 
-  @doc "The file to read: `SOURCES_FILE` if set, else `sources.toml`."
-  def default_path, do: System.get_env("SOURCES_FILE") || @default_path
+  @doc "The file to read: `SOURCES_FILE` if set, else `<data dir>/sources.toml`."
+  def default_path,
+    do: System.get_env("SOURCES_FILE") || Path.join(RetrievalNode.data_dir(), @file_name)
 
   @doc "Reads and validates the file."
   @spec load(Path.t()) :: {:ok, [entry()]} | {:error, String.t()}
@@ -199,7 +201,7 @@ defmodule RetrievalNode.SourcesFile do
         {:ok, body}
 
       {:error, :enoent} ->
-        {:error, "cannot read #{path}: no such file (start from sources.example.toml)"}
+        {:error, "cannot read #{path}: no such file (copy sources.example.toml there)"}
 
       {:error, reason} ->
         {:error, "cannot read #{path}: #{:file.format_error(reason)}"}

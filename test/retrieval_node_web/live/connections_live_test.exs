@@ -22,13 +22,17 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     ]
   }
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     prev = %{
+      data_dir: Application.get_env(:retrieval_node, :data_dir),
       google: Application.get_env(:retrieval_node, :google),
       google_req: Application.get_env(:retrieval_node, :google_req_options),
       drive_req: Application.get_env(:retrieval_node, :drive_req_options)
     }
 
+    Application.put_env(:retrieval_node, :data_dir, dir)
     Application.put_env(:retrieval_node, :google, client_id: "cid", client_secret: "csecret")
     Application.put_env(:retrieval_node, :google_req_options, plug: {Req.Test, __MODULE__})
     Application.put_env(:retrieval_node, :drive_req_options, plug: {Req.Test, __MODULE__})
@@ -36,6 +40,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     on_exit(fn ->
       OAuth.invalidate()
+      Application.put_env(:retrieval_node, :data_dir, prev.data_dir)
       Application.put_env(:retrieval_node, :google, prev.google)
       Application.put_env(:retrieval_node, :google_req_options, prev.google_req)
       Application.put_env(:retrieval_node, :drive_req_options, prev.drive_req)
@@ -78,7 +83,8 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     query["state"]
   end
 
-  test "connect, come back with a code: the token is shown once and used", %{conn: conn} do
+  test "connect, come back with a code: the token is stored in secrets.toml, never shown",
+       %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/connections")
     assert html =~ "not authorized"
     state = state_from(view)
@@ -86,14 +92,19 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     {:ok, view, _html} = live(conn, ~p"/google/callback?#{[state: state, code: "c0de"]}")
 
     html = render(view)
-    assert html =~ "GOOGLE_REFRESH_TOKEN=rtok-123"
-    assert html =~ "Classification label found"
-    assert Application.get_env(:retrieval_node, :google)[:refresh_token] == "rtok-123"
-
-    # A fresh visit doesn't show it again.
-    {:ok, _view, html} = live(conn, ~p"/connections")
     refute html =~ "rtok-123"
-    assert html =~ "authorized"
+    assert html =~ "The token is stored"
+    assert html =~ "Classification label found"
+    assert RetrievalNode.Secrets.get("google_refresh_token") == "rtok-123"
+
+    {:ok, view, html} = live(conn, ~p"/connections")
+    assert html =~ "Token stored in"
+    assert html =~ "secrets.toml"
+
+    # Disconnect forgets it.
+    html = view |> element("#disconnect-google") |> render_click()
+    assert html =~ "not authorized"
+    assert RetrievalNode.Secrets.get("google_refresh_token") == nil
   end
 
   test "pasting the redirected URL finishes the same way", %{conn: conn} do
@@ -107,16 +118,30 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       })
       |> render_submit()
 
-    assert html =~ "GOOGLE_REFRESH_TOKEN=rtok-123"
+    assert html =~ "The token is stored"
+    assert RetrievalNode.Secrets.get("google_refresh_token") == "rtok-123"
   end
 
   test "a forged state or a denial is refused without exchanging", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/google/callback?#{[state: "forged", code: "c0de"]}")
     assert render(view) =~ "doesn&#39;t match a link from this server"
-    refute Application.get_env(:retrieval_node, :google)[:refresh_token]
+    refute RetrievalNode.Secrets.get("google_refresh_token")
 
     {:ok, view, _html} = live(conn, ~p"/google/callback?#{[error: "access_denied"]}")
     assert render(view) =~ "access not granted"
+  end
+
+  test "a token from the environment is shown as overriding the stored one", %{conn: conn} do
+    Application.put_env(:retrieval_node, :google,
+      client_id: "cid",
+      client_secret: "csecret",
+      refresh_token: "1//env"
+    )
+
+    {:ok, _view, html} = live(conn, ~p"/connections")
+    assert html =~ "GOOGLE_REFRESH_TOKEN"
+    assert html =~ "overrides"
+    refute html =~ "disconnect-google"
   end
 
   test "without a client id, explains what to configure", %{conn: conn} do

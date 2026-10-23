@@ -60,16 +60,12 @@ defmodule RetrievalNode.Google.OAuthTest do
                      }}
   end
 
-  test "configured?/authorized? and use_refresh_token/1" do
+  test "configured?/authorized?" do
     assert OAuth.configured?()
     assert OAuth.authorized?()
 
     Application.put_env(:retrieval_node, :google, client_id: "cid", client_secret: "s")
     refute OAuth.authorized?()
-
-    :ok = OAuth.use_refresh_token("new")
-    assert OAuth.authorized?()
-    assert Application.get_env(:retrieval_node, :google)[:refresh_token] == "new"
   end
 
   test "access_token refreshes once, then serves the cached token" do
@@ -112,5 +108,55 @@ defmodule RetrievalNode.Google.OAuthTest do
   test "no refresh token configured means not authorized" do
     Application.put_env(:retrieval_node, :google, client_id: "cid", client_secret: "s")
     assert {:error, :google_not_authorized} = OAuth.access_token()
+  end
+
+  describe "stored token" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: dir} do
+      prev = Application.get_env(:retrieval_node, :data_dir)
+      Application.put_env(:retrieval_node, :data_dir, dir)
+      Application.put_env(:retrieval_node, :google, client_id: "cid", client_secret: "s")
+      on_exit(fn -> Application.put_env(:retrieval_node, :data_dir, prev) end)
+    end
+
+    test "store_refresh_token/1 persists it; forget_refresh_token/0 removes it" do
+      assert OAuth.token_source() == nil
+      refute OAuth.authorized?()
+
+      :ok = OAuth.store_refresh_token("1//stored")
+      assert OAuth.token_source() == :secrets
+      assert OAuth.authorized?()
+      assert RetrievalNode.Secrets.get("google_refresh_token") == "1//stored"
+
+      :ok = OAuth.forget_refresh_token()
+      assert OAuth.token_source() == nil
+    end
+
+    test "the stored token is what gets refreshed" do
+      :ok = OAuth.store_refresh_token("1//stored")
+      parent = self()
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        send(parent, {:token_request, URI.decode_query(body)})
+        Req.Test.json(conn, %{"access_token" => "atok", "expires_in" => 3600})
+      end)
+
+      assert {:ok, "atok"} = OAuth.access_token()
+      assert_received {:token_request, %{"refresh_token" => "1//stored"}}
+    end
+
+    test "GOOGLE_REFRESH_TOKEN overrides the stored token" do
+      :ok = OAuth.store_refresh_token("1//stored")
+
+      Application.put_env(:retrieval_node, :google,
+        client_id: "cid",
+        client_secret: "s",
+        refresh_token: "1//from-env"
+      )
+
+      assert OAuth.token_source() == :env
+    end
   end
 end

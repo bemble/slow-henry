@@ -9,9 +9,10 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   "Connect" sends the browser to Google's consent screen; Google redirects
   back to `/google/callback` on this same server (a Desktop OAuth client
-  accepts any loopback redirect). The code is exchanged there, the refresh
-  token is shown **once** and used by this running node until restart — it is
-  never written anywhere; persisting it as GOOGLE_REFRESH_TOKEN is up to you.
+  accepts any loopback redirect). The code is exchanged there and the refresh
+  token stored in `<data dir>/secrets.toml` (`RetrievalNode.Secrets`); it is
+  never displayed. "Disconnect" forgets it. `GOOGLE_REFRESH_TOKEN`, when set,
+  overrides the stored one.
 
   When the browser can't reach the redirect (the server runs on another
   machine, so `localhost` is the wrong host), the page that fails to load
@@ -64,7 +65,12 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    socket = assign(socket, configured: OAuth.configured?(), authorized: OAuth.authorized?())
+    socket =
+      assign(socket,
+        configured: OAuth.configured?(),
+        authorized: OAuth.authorized?(),
+        token_source: OAuth.token_source()
+      )
 
     case socket.assigns.live_action do
       :callback ->
@@ -83,6 +89,17 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   @impl true
   def handle_event("check_ollama", _params, socket), do: {:noreply, probe_ollama(socket)}
+
+  def handle_event("disconnect_google", _params, socket) do
+    :ok = OAuth.forget_refresh_token()
+
+    {:noreply,
+     assign(socket,
+       authorized: OAuth.authorized?(),
+       token_source: OAuth.token_source(),
+       result: nil
+     )}
+  end
 
   def handle_event("paste", %{"url" => url}, socket) do
     params =
@@ -112,11 +129,12 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   defp complete(socket, params) do
     case exchange(params) do
       {:ok, refresh} ->
-        OAuth.use_refresh_token(refresh)
+        :ok = OAuth.store_refresh_token(refresh)
 
         assign(socket,
           authorized: true,
-          result: %{token: refresh, label: Drive.classification_label()}
+          token_source: OAuth.token_source(),
+          result: %{stored: true, label: Drive.classification_label()}
         )
 
       {:error, reason} ->
@@ -187,28 +205,38 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
           {if @authorized, do: "Reconnect Google Drive", else: "Connect Google Drive"}
         </a>
         <span :if={!@auth_url} class="loading loading-spinner loading-sm"></span>
+        <button
+          :if={@token_source == :secrets}
+          id="disconnect-google"
+          phx-click="disconnect_google"
+          data-confirm="Forget the stored Google token? Drive sync stops until you reconnect."
+          class="btn btn-ghost btn-sm"
+        >
+          Disconnect
+        </button>
       </div>
+      <p :if={@token_source} id="token-source" class="text-xs opacity-70">
+        <span :if={@token_source == :secrets}>
+          Token stored in <code>{RetrievalNode.Secrets.path()}</code>.
+        </span>
+        <span :if={@token_source == :env}>
+          Token from <code>GOOGLE_REFRESH_TOKEN</code> (environment), which overrides
+          <code>{RetrievalNode.Secrets.path()}</code>.
+        </span>
+      </p>
 
       <div :if={@result && @result[:error]} id="auth-error" role="alert" class="alert alert-error">
         <.icon name="hero-x-circle" class="size-5" />
         <span>{@result.error}</span>
       </div>
 
-      <div :if={@result && @result[:token]} id="auth-result" class="space-y-3">
+      <div :if={@result && @result[:stored]} id="auth-result" class="space-y-3">
         <div role="alert" class="alert alert-success">
           <.icon name="hero-check-circle" class="size-5" />
-          <span>Authorized. This server uses the token now, until it restarts.</span>
+          <span>Authorized. The token is stored and used from now on, across restarts.</span>
         </div>
 
         <.label_check label={@result.label} />
-
-        <div class="rounded-box border border-base-300 p-4">
-          <p class="mb-2 text-sm">
-            To keep it across restarts, set this in the server's environment. It grants read access
-            to your Drive: store it like a password. <strong>It is shown only once.</strong>
-          </p>
-          <pre id="refresh-token" class="overflow-x-auto rounded bg-base-200 p-3 text-xs select-all">GOOGLE_REFRESH_TOKEN={@result.token}</pre>
-        </div>
       </div>
 
       <details :if={@configured} class="rounded-box border border-base-300 p-4">

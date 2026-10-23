@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Rn.Sources do
   @shortdoc "Aligns the registered git and Drive sources with sources.toml"
 
   @moduledoc """
-  Reads `sources.toml` (or `SOURCES_FILE`, or `--file PATH`) and aligns the
+  Reads `DATA_DIR/sources.toml` (or `SOURCES_FILE`, or `--file PATH`) and aligns the
   `sources` table with it — see `RetrievalNode.SourcesFile` for the format and
   the rules. Added and re-activated repos get their first sync enqueued; the
   running server's Oban picks it up.
