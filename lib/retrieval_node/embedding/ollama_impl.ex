@@ -74,6 +74,60 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
     |> Enum.flat_map(&request/1)
   end
 
+  @doc """
+  Probes the server for the Connections page: version, whether the
+  configured model is pulled, and a one-text embedding round trip. Never
+  raises.
+  """
+  def status do
+    endpoint = String.trim_trailing(config(:endpoint), "/")
+    model = config(:model)
+
+    req =
+      Req.new(
+        [retry: false, receive_timeout: 5_000, finch: [name: RetrievalNode.Finch]] ++
+          req_options()
+      )
+
+    with {:ok, %{status: 200, body: %{"version" => version}}} <-
+           Req.get(req, url: endpoint <> "/api/version"),
+         {:ok, %{status: 200, body: %{"models" => models}}} <-
+           Req.get(req, url: endpoint <> "/api/tags") do
+      pulled? = Enum.any?(models, &(&1["name"] in [model, model <> ":latest"]))
+      {probe_ms, probe} = if pulled?, do: probe(), else: {nil, {:error, :model_not_pulled}}
+
+      %{
+        endpoint: endpoint,
+        model: model,
+        reachable: true,
+        version: version,
+        model_pulled: pulled?,
+        probe_ms: probe_ms,
+        probe: probe
+      }
+    else
+      other -> %{endpoint: endpoint, model: model, reachable: false, error: describe(other)}
+    end
+  end
+
+  defp probe do
+    {us, result} =
+      :timer.tc(fn ->
+        try do
+          {:ok, length(embed("connection check"))}
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
+      end)
+
+    {div(us, 1000), result}
+  end
+
+  defp describe({:ok, %{status: status}}), do: "HTTP #{status}"
+  defp describe({:error, %{reason: reason}}), do: inspect(reason)
+  defp describe({:error, reason}), do: inspect(reason)
+  defp describe(other), do: inspect(other, limit: 3)
+
   defp req_options, do: Application.get_env(:retrieval_node, :embedding_req_options, [])
 
   @doc "Matryoshka post-processing of one full-size embedding (pure)."

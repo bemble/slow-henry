@@ -34,7 +34,9 @@ exposed to clients as **MCP tools** over HTTP.
     Oban job errors, and database size per table;
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
-  - `/google` — Google Drive authorization.
+  - `/connections` — embedding backend status (Ollama reachability, model,
+    share of the index on the current embedding setup) and Google Drive
+    authorization.
 
 ## Stack
 
@@ -74,7 +76,7 @@ its values win over the shell environment.
 | `OLLAMA_ENDPOINT` | Ollama server for embeddings, e.g. `http://localhost:11434` (see [Embeddings](#embeddings)). Unset: in-process CPU model. |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
-| `GOOGLE_REFRESH_TOKEN` | Google Drive access, obtained from the `/google` page. |
+| `GOOGLE_REFRESH_TOKEN` | Google Drive access, obtained from the `/connections` page. |
 | `SOURCES_FILE` | Path of the sources file (default `sources.toml`). |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
@@ -104,9 +106,9 @@ queries with `search_query: `, as the model was trained.
 
 **Switching setups.** Vectors from different backends, models or prefixes
 don't mix well in one index. Every chunk records the setup that embedded it
-(`chunks.embedding_profile`, e.g. `ollama:nomic-embed-text:nomic-prefixes:384`),
-and new or changed files are always embedded with the current one. To redo
-the rest:
+(`chunks.embedding_profile`, e.g. `ollama:nomic-embed-text:nomic-prefixes:384`);
+the Connections page shows how much of the index is on the current one, and
+new or changed files are always embedded with it. To redo the rest:
 
 ```sh
 mix rn.reembed     # only chunks not on the current setup; re-run to resume
@@ -181,13 +183,13 @@ One-time setup:
    `drive.labels.readonly`.
 3. Create an OAuth client ID of type **Desktop app**, and set
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
-4. Open `/google` in the UI and click **Connect Google Drive**. Google redirects
+4. Open `/connections` in the UI and click **Connect Google Drive**. Google redirects
    back to `/google/callback`; the refresh token is then used until the server
    restarts and **shown once**. Nothing is written to disk: set
    `GOOGLE_REFRESH_TOKEN` to keep it.
 
 When the server runs on another machine than the browser, Google's redirect to
-`localhost` fails to load: paste that page's URL into the form on `/google`.
+`localhost` fails to load: paste that page's URL into the form on `/connections`.
 
 ## Project plan
 
