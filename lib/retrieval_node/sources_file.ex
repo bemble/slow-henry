@@ -20,7 +20,8 @@ defmodule RetrievalNode.SourcesFile do
   Drive docs are further filtered by their Classification label (see
   `Ingest.DrivePolicy`).
 
-  `apply/1` aligns the `sources` table with the file:
+  `apply/1` aligns the `sources` table with the file — at boot and on every
+  change by `SourcesFile.Watcher`, or by hand with `mix rn.sources`:
 
     * an entry with no matching source is **added** and gets its first sync;
     * a known one whose name, `active` flag or Drive scope differs is

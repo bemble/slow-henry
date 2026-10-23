@@ -74,3 +74,6 @@ config :phoenix_live_view,
 
 # Drive/Google: a fixed access token (no token endpoint) and Req.Test plugs.
 config :retrieval_node, :google, access_token: "test-token"
+
+# sources.toml is applied by tests explicitly, never by a background watcher.
+config :retrieval_node, :sources_watch, false

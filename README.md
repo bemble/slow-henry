@@ -77,7 +77,8 @@ its values win over the shell environment.
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Google Drive access, obtained from the `/connections` page. |
-| `SOURCES_FILE` | Path of the sources file (default `sources.toml`). |
+| `SOURCES_FILE` | Path of the sources file (default `sources.toml`; use an absolute path for a release). |
+| `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
 | `PORT` | HTTP port (default 4000). |
@@ -143,6 +144,12 @@ my_drive = true                  # Docs you own (default true)
 shared_with_me = false           # Docs shared directly with you (default false)
 include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tree)
 ```
+
+The server applies the file when it starts and again whenever its content
+changes (checked every 30 seconds, `SOURCES_WATCH_INTERVAL` to change it); the
+Sources page says when it was last applied. A missing or invalid file changes
+nothing — the sources stay as they are and the page shows the error. To apply
+or preview by hand:
 
 ```sh
 mix rn.sources --dry-run   # print what would change
