@@ -305,11 +305,20 @@ One-time setup:
    across restarts. **Disconnect** on the same page forgets it.
    `GOOGLE_REFRESH_TOKEN`, if set, overrides the stored token.
 
-When the server runs on another machine than the browser, either keep the Desktop
-client and paste the page Google's `localhost` redirect fails to load into the form
-on `/connections`, or set `PHX_HOST` and use a **Web application** client with
-`http://<PHX_HOST>:<PORT>/google/callback` as an authorized redirect URI. Google only
-accepts that for a real domain name (not an IP) served over HTTPS, `localhost` aside.
+> [!IMPORTANT]
+> **On a server (Docker, `PHX_HOST` set), authorize Google from a local run first.**
+> The redirect then goes to `http://<PHX_HOST>:<PORT>/google/callback`, which a
+> Desktop client refuses ("Access blocked: This app's request is invalid", and the
+> paste form on `/connections` can't help either). Instead:
+>
+> 1. Start the app locally (`mix phx.server`) with the same `GOOGLE_CLIENT_ID` /
+>    `GOOGLE_CLIENT_SECRET`, and connect Google from `http://localhost:4000/connections`.
+> 2. Copy `google_refresh_token` from the local `data/secrets.toml` into the server's
+>    `.env` as `GOOGLE_REFRESH_TOKEN`, along with the same client id and secret, and
+>    restart it.
+>
+> The token is tied to that OAuth client: keep both together. With an **Internal**
+> consent screen it doesn't expire (unless revoked or unused for 6 months).
 
 ### GitHub
 
