@@ -111,6 +111,13 @@ mix rn.reembed     # stop the server first; --source NAME, --after ID to resume
 
 It re-embeds the stored chunk text without re-chunking.
 
+**When Ollama is unreachable** (connection refused, timeout, 502/503/504),
+nothing is lost or given up: ingestion defers the source's staged files and
+retries every minute without spending their attempts, and search falls back
+to full-text ranking — the search page shows a notice, and the
+`semantic_search` MCP tool returns `"mode": "text_only"` instead of
+`"hybrid"`.
+
 ## Sources
 
 Git repos and the Google Drive scope are declared in `sources.toml`

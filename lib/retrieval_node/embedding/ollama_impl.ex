@@ -23,11 +23,14 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
   models. Vectors from different models or prefixes don't mix: switching
   means re-embedding everything.
 
-  Errors raise, like the in-process serving's, so `SourceOwner` marks the
-  file failed and retries it.
+  An unreachable server (connection refused, timeout, 502/503/504) raises
+  `Embedding.Unavailable`, which ingestion and search treat as transient;
+  other errors raise, like the in-process serving's, and fail the file.
   """
 
   @behaviour RetrievalNode.Embedding
+
+  alias RetrievalNode.Embedding.Unavailable
 
   @dimensions 384
   @norm_epsilon 1.0e-12
@@ -90,11 +93,14 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
       {:ok, %{status: 200, body: %{"data" => data}}} when length(data) == length(inputs) ->
         data |> Enum.sort_by(& &1["index"]) |> Enum.map(&matryoshka(&1["embedding"]))
 
+      {:ok, %{status: status}} when status in [502, 503, 504] ->
+        raise Unavailable, "Ollama at #{config(:endpoint)} returned #{status}"
+
       {:ok, %{status: status, body: body}} ->
         raise "Ollama returned #{status}: #{inspect(body, limit: 5, printable_limit: 200)}"
 
       {:error, reason} ->
-        raise "Ollama unreachable at #{config(:endpoint)}: #{inspect(reason)}"
+        raise Unavailable, "Ollama unreachable at #{config(:endpoint)}: #{inspect(reason)}"
     end
   end
 
