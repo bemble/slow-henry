@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/bemble/slow-henry/compare/v0.2.1...v0.3.0) (2026-10-23)
+
+
+### Features
+
+* edit sources.toml from the UI ([ccaa2ac](https://github.com/bemble/slow-henry/commit/ccaa2acc7b62606f05749236b56525ca85cecd49))
+
 ## [0.2.1](https://github.com/bemble/slow-henry/compare/v0.2.0...v0.2.1) (2026-10-23)
 
 
