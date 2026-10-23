@@ -33,7 +33,7 @@ defmodule RetrievalNodeWeb.Layouts do
 
   attr :active, :atom,
     default: nil,
-    doc: "the nav entry to highlight (:sources | :search | :google)"
+    doc: "the nav entry to highlight (:sources | :search | :connections)"
 
   slot :inner_block, required: true
 
@@ -65,10 +65,10 @@ defmodule RetrievalNodeWeb.Layouts do
           </li>
           <li>
             <.link
-              navigate={~p"/google"}
-              class={["btn btn-ghost btn-sm", @active == :google && "btn-active"]}
+              navigate={~p"/connections"}
+              class={["btn btn-ghost btn-sm", @active == :connections && "btn-active"]}
             >
-              Google
+              Connections
             </.link>
           </li>
           <li>

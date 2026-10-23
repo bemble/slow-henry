@@ -1,6 +1,11 @@
-defmodule RetrievalNodeWeb.GoogleLive do
+defmodule RetrievalNodeWeb.ConnectionsLive do
   @moduledoc """
-  Google Drive authorization, entirely from the UI.
+  The external services Slow Henry talks to: the Ollama embedding server
+  (when `OLLAMA_ENDPOINT` is set), and Google Drive authorization, entirely
+  from the UI.
+
+  Ollama's status is probed asynchronously on each visit (version, model
+  pulled, a one-text embedding round trip); "Check again" re-probes.
 
   "Connect" sends the browser to Google's consent screen; Google redirects
   back to `/google/callback` on this same server (a Desktop OAuth client
@@ -17,6 +22,8 @@ defmodule RetrievalNodeWeb.GoogleLive do
   """
   use RetrievalNodeWeb, :live_view
 
+  alias RetrievalNode.Embedding
+  alias RetrievalNode.Embedding.OllamaImpl
   alias RetrievalNode.Google.OAuth
   alias RetrievalNode.Ingest.Drive
 
@@ -25,13 +32,35 @@ defmodule RetrievalNodeWeb.GoogleLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok,
-     assign(socket,
-       page_title: "Google",
-       result: nil,
-       paste_form: to_form(%{"url" => ""})
-     )}
+    ollama? = Embedding.impl() == OllamaImpl
+
+    socket =
+      assign(socket,
+        page_title: "Connections",
+        result: nil,
+        paste_form: to_form(%{"url" => ""}),
+        ollama?: ollama?,
+        ollama: nil,
+        profile: Embedding.profile(),
+        profiles: RetrievalNode.Inventory.embedding_profiles()
+      )
+
+    {:ok, if(ollama? and connected?(socket), do: probe_ollama(socket), else: socket)}
   end
+
+  defp probe_ollama(socket) do
+    socket |> assign(ollama: :checking) |> start_async(:ollama, &OllamaImpl.status/0)
+  end
+
+  @impl true
+  def handle_async(:ollama, {:ok, status}, socket), do: {:noreply, assign(socket, ollama: status)}
+
+  def handle_async(:ollama, {:exit, reason}, socket),
+    do:
+      {:noreply,
+       assign(socket,
+         ollama: %{reachable: false, error: inspect(reason), endpoint: nil, model: nil}
+       )}
 
   @impl true
   def handle_params(params, _uri, socket) do
@@ -42,7 +71,7 @@ defmodule RetrievalNodeWeb.GoogleLive do
         # The exchange must happen once: on the connected mount only, never on
         # the static render (a code can be redeemed a single time).
         if connected?(socket) do
-          {:noreply, socket |> complete(params) |> push_patch(to: ~p"/google")}
+          {:noreply, socket |> complete(params) |> push_patch(to: ~p"/connections")}
         else
           {:noreply, assign(socket, auth_url: nil)}
         end
@@ -53,6 +82,8 @@ defmodule RetrievalNodeWeb.GoogleLive do
   end
 
   @impl true
+  def handle_event("check_ollama", _params, socket), do: {:noreply, probe_ollama(socket)}
+
   def handle_event("paste", %{"url" => url}, socket) do
     params =
       case URI.parse(String.trim(url)) do
@@ -119,9 +150,21 @@ defmodule RetrievalNodeWeb.GoogleLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} active={:google}>
+    <Layouts.app flash={@flash} active={:connections}>
+      <h1 class="text-2xl font-semibold">Connections</h1>
+
+      <section id="ollama" class="space-y-2">
+        <h2 class="text-lg font-semibold">Embeddings</h2>
+        <p :if={!@ollama?} class="text-sm opacity-70">
+          Computed in-process on the CPU. Set <code>OLLAMA_ENDPOINT</code>
+          to use an Ollama server instead (see the README).
+        </p>
+        <.ollama_status :if={@ollama?} status={@ollama} />
+        <.index_profiles profile={@profile} profiles={@profiles} />
+      </section>
+
       <div>
-        <h1 class="text-2xl font-semibold">Google Drive access</h1>
+        <h2 class="text-lg font-semibold">Google Drive</h2>
         <p class="text-sm opacity-70">
           Read-only access to your Drive and its labels, for the Drive source in sources.toml.
         </p>
@@ -190,6 +233,91 @@ defmodule RetrievalNodeWeb.GoogleLive do
     </Layouts.app>
     """
   end
+
+  attr :profile, :string, required: true
+  attr :profiles, :list, required: true
+
+  # How much of the index was embedded with the current setup.
+  defp index_profiles(assigns) do
+    total = Enum.sum_by(assigns.profiles, &elem(&1, 1))
+
+    current =
+      Enum.find_value(assigns.profiles, 0, fn {p, n} -> if p == assigns.profile, do: n end)
+
+    others = Enum.reject(assigns.profiles, fn {p, _} -> p == assigns.profile end)
+    assigns = assign(assigns, total: total, current: current, others: others)
+
+    ~H"""
+    <div id="index-profiles" class="text-sm">
+      <p>
+        Index: <strong>{@current}</strong> of {@total} chunks embedded with the current setup
+        <code class="text-xs">{@profile}</code>.
+      </p>
+      <div :if={@others != []} role="alert" class="alert alert-warning mt-2 text-sm">
+        <.icon name="hero-exclamation-triangle" class="size-5" />
+        <div>
+          <p>
+            {@total - @current} chunks come from another setup, and vectors from different
+            setups don't mix well: run <code>mix rn.reembed</code> (server stopped).
+          </p>
+          <ul class="mt-1 list-inside list-disc">
+            <li :for={{p, n} <- @others}>
+              <code class="text-xs">{p || "unrecorded (before profiles)"}</code>: {n}
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :status, :any, required: true
+
+  defp ollama_status(%{status: s} = assigns) when s in [nil, :checking] do
+    ~H"""
+    <p id="ollama-status" class="flex items-center gap-2 text-sm">
+      <span class="loading loading-spinner loading-xs"></span> Checking Ollama…
+    </p>
+    """
+  end
+
+  defp ollama_status(%{status: %{reachable: true}} = assigns) do
+    ~H"""
+    <div id="ollama-status" class="flex flex-wrap items-center gap-2 text-sm">
+      <span class={["badge", if(ok?(@status), do: "badge-success", else: "badge-warning")]}>
+        {if ok?(@status), do: "connected", else: "degraded"}
+      </span>
+      <span>Ollama {@status.version} at <code>{@status.endpoint}</code></span>
+      <span :if={@status.model_pulled}>
+        · model <code>{@status.model}</code>
+        <span :if={match?({:ok, _}, @status.probe)}>· answered in {@status.probe_ms} ms</span>
+      </span>
+      <span :if={!@status.model_pulled} class="text-warning">
+        · model <code>{@status.model}</code> is not pulled: <code>ollama pull {@status.model}</code>
+      </span>
+      <span :if={match?({:error, _}, @status.probe) and @status.model_pulled} class="text-error">
+        · embedding failed: {elem(@status.probe, 1)}
+      </span>
+      <button phx-click="check_ollama" class="btn btn-ghost btn-xs">
+        <.icon name="hero-arrow-path" class="size-4" /> Check again
+      </button>
+    </div>
+    """
+  end
+
+  defp ollama_status(assigns) do
+    ~H"""
+    <div id="ollama-status" class="flex flex-wrap items-center gap-2 text-sm">
+      <span class="badge badge-error">unreachable</span>
+      <span>Ollama at <code>{@status.endpoint}</code>: {@status.error}</span>
+      <button phx-click="check_ollama" class="btn btn-ghost btn-xs">
+        <.icon name="hero-arrow-path" class="size-4" /> Check again
+      </button>
+    </div>
+    """
+  end
+
+  defp ok?(status), do: status.model_pulled and match?({:ok, _}, status.probe)
 
   attr :label, :any, required: true
 

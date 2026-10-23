@@ -188,6 +188,13 @@ defmodule RetrievalNode.Inventory do
     }
   end
 
+  @doc "Chunk counts per embedding profile (nil = recorded before profiles existed)."
+  def embedding_profiles do
+    from(c in Chunk, group_by: c.embedding_profile, select: {c.embedding_profile, count(c.id)})
+    |> Repo.all()
+    |> Enum.sort_by(&elem(&1, 1), :desc)
+  end
+
   @doc "Enqueue a sync for a source, collapsing onto an already queued one."
   def enqueue_sync(%Source{} = source) do
     worker = Map.fetch!(@sync_workers, source.source_type)

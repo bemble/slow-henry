@@ -32,8 +32,10 @@ defmodule RetrievalNodeWeb.Router do
     live "/", SourcesLive, :index
     live "/sources/:id", SourceLive, :show
     live "/search", SearchLive, :index
-    live "/google", GoogleLive, :index
-    live "/google/callback", GoogleLive, :callback
+    live "/connections", ConnectionsLive, :index
+    # Google's OAuth redirect (the registered loopback path) and the old URL.
+    live "/google/callback", ConnectionsLive, :callback
+    live "/google", ConnectionsLive, :index
   end
 
   # Readiness probe — top-level (not under /api), no auth: a LAN-only slice
