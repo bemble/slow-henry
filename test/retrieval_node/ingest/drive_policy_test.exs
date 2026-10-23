@@ -108,6 +108,30 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
     refute DrivePolicy.indexable?(doc(), s, @cls, @no_parents)
   end
 
+  test "Drive.strip_images/1 drops inline and reference-style images, keeps the text" do
+    b64 = String.duplicate("iVBORw0KGgo", 50)
+
+    markdown = """
+    # Plan
+
+    Intro ![chart](data:image/png;base64,#{b64}) and more.
+
+    ![][image1]
+
+    See [the doc](https://example.com/doc).
+
+    [image1]: <data:image/png;base64,#{b64}>
+    """
+
+    stripped = Drive.strip_images(markdown)
+
+    refute stripped =~ "base64"
+    refute stripped =~ "image1"
+    assert stripped =~ "# Plan"
+    assert stripped =~ "Intro  and more."
+    assert stripped =~ "[the doc](https://example.com/doc)"
+  end
+
   test "Drive.parse_classification/3 picks the label, its selection field and allowed choices" do
     body = %{
       "labels" => [

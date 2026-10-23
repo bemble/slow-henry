@@ -254,7 +254,9 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
 
   defp export_row(source, file) do
     case Drive.export_doc(file["id"]) do
-      {:ok, text} ->
+      {:ok, markdown} ->
+        text = Drive.strip_images(markdown)
+
         if Chunking.binary_content?(text) do
           {:ok, deletion_row(source, file["id"])}
         else

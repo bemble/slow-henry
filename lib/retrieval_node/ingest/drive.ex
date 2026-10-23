@@ -132,6 +132,19 @@ defmodule RetrievalNode.Ingest.Drive do
     get("/drive/v3/files/#{seg(id)}", fields: fields, supportsAllDrives: true)
   end
 
+  @doc """
+  Removes images from a markdown export. Google inlines every image as a
+  base64 `data:` URI (one doc here was 30 KB of text and 3.7 MB of images),
+  which floods chunks and embeddings and can exceed Postgres' 1 MB tsvector
+  limit. Both forms are dropped: `![alt](data:...)` and the reference
+  definitions `[image1]: <data:...>` with their `![][image1]` uses.
+  """
+  def strip_images(markdown) do
+    markdown
+    |> String.replace(~r/^\[[^\]\n]+\]:\s*<?data:[^\s>]*>?[ \t]*\n?/m, "")
+    |> String.replace(~r/!\[[^\]\n]*\](\([^)\n]*\)|\[[^\]\n]*\])/, "")
+  end
+
   @doc "A Google Doc exported as markdown."
   def export_doc(file_id) do
     # Drive renders the export on the fly: a long doc can take well over Req's
