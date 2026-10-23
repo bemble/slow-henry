@@ -8,6 +8,8 @@ defmodule RetrievalNode.SourcesFile do
       name = "adr"                                  # mirror slug + MCP `repo` filter
       url = "https://github.com/my-org/adr.git"     # clone URL (the source identity)
       # active = false                              # keep indexed chunks, stop syncing
+      # exclude = ["docs/*", "!docs/adr"]           # .gitignore-style (Ingest.PathFilter)
+      # pull_requests = true                        # also index merged PRs (default false)
 
       [drive]
       my_drive = true                               # Docs you own (default true)
@@ -32,7 +34,8 @@ defmodule RetrievalNode.SourcesFile do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, RepoSync}
+  alias RetrievalNode.Ingest.PathFilter
+  alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
 
@@ -122,7 +125,7 @@ defmodule RetrievalNode.SourcesFile do
     result = Repo.transaction(fn -> Enum.map(changes, &write!/1) end)
 
     with {:ok, written} <- result do
-      for {change, source} <- written, args = sync_args(change), do: enqueue!(source, args)
+      for {change, source} <- written, job <- sync_jobs(change), do: enqueue!(source, job)
       {:ok, changes}
     end
   end
@@ -148,22 +151,42 @@ defmodule RetrievalNode.SourcesFile do
 
   defp write({:unchanged, s}), do: {:ok, s}
 
-  # nil = no sync; otherwise the extra job args.
-  defp sync_args({:add, e}), do: if(e.active, do: %{})
+  # The {worker, extra args} jobs a change calls for.
+  defp sync_jobs({:add, %{active: false}}), do: []
+  defp sync_jobs({:add, e}), do: [{worker(e), %{}} | pr_job(%{}, e.config)]
 
-  defp sync_args({:update, s, e}) do
-    cond do
-      not e.active -> nil
-      e.source_type == :drive_folder and (s.config || %{}) != e.config -> %{"mode" => "full"}
-      not s.active -> %{}
-      true -> nil
-    end
+  defp sync_jobs({:update, _s, %{active: false}}), do: []
+
+  defp sync_jobs({:update, s, e}) do
+    old = s.config || %{}
+
+    main =
+      cond do
+        # A changed scope (Drive include, git exclude) affects content that
+        # didn't change: re-read everything.
+        scope(old) != scope(e.config) -> [{worker(e), %{"mode" => "full"}}]
+        not s.active -> [{worker(e), %{}}]
+        true -> []
+      end
+
+    main ++ pr_job(if(s.active, do: old, else: %{}), e.config)
   end
 
-  defp sync_args(_), do: nil
+  defp sync_jobs(_change), do: []
 
-  defp enqueue!(source, args) do
-    worker = if source.source_type == :drive_folder, do: DriveSync, else: RepoSync
+  # PR sync when pull_requests is newly on (or the source comes back).
+  defp pr_job(old, new) do
+    if new["pull_requests"] == true and old["pull_requests"] != true,
+      do: [{PullRequestSync, %{}}],
+      else: []
+  end
+
+  defp scope(config), do: Map.delete(config, "pull_requests")
+
+  defp worker(%{source_type: :drive_folder}), do: DriveSync
+  defp worker(_entry), do: RepoSync
+
+  defp enqueue!(source, {worker, args}) do
     {:ok, _job} = Oban.insert(worker.new(Map.put(args, "source_id", source.id)))
   end
 
@@ -222,7 +245,9 @@ defmodule RetrievalNode.SourcesFile do
   defp git_entry(%{"name" => name, "url" => url} = item)
        when is_binary(name) and is_binary(url) do
     active = Map.get(item, "active", true)
-    unknown = Map.keys(item) -- ~w(name url active)
+    exclude = Map.get(item, "exclude", [])
+    pull_requests = Map.get(item, "pull_requests", false)
+    unknown = Map.keys(item) -- ~w(name url active exclude pull_requests)
 
     cond do
       unknown != [] ->
@@ -234,15 +259,33 @@ defmodule RetrievalNode.SourcesFile do
       not Enum.any?(@url_schemes, &String.starts_with?(url, &1)) ->
         {:error, "invalid url #{inspect(url)}"}
 
-      not is_boolean(active) ->
-        {:error, "`active` must be true or false"}
+      not is_boolean(active) or not is_boolean(pull_requests) ->
+        {:error, "`active` and `pull_requests` must be true or false"}
+
+      not PathFilter.valid?(exclude) ->
+        {:error, "`exclude` must be a list of path patterns"}
 
       true ->
-        {:ok, %{source_type: :git_repo, identifier: url, name: name, active: active, config: %{}}}
+        {:ok,
+         %{
+           source_type: :git_repo,
+           identifier: url,
+           name: name,
+           active: active,
+           config: git_config(exclude, pull_requests)
+         }}
     end
   end
 
   defp git_entry(_), do: {:error, "`name` and `url` are required strings"}
+
+  # Options are stored only when set, so sources configured before they
+  # existed don't read as changed.
+  defp git_config(exclude, pull_requests) do
+    %{}
+    |> then(&if(exclude != [], do: Map.put(&1, "exclude", exclude), else: &1))
+    |> then(&if(pull_requests, do: Map.put(&1, "pull_requests", true), else: &1))
+  end
 
   defp drive_entry(nil), do: {:ok, nil}
 

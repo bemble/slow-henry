@@ -60,8 +60,9 @@ defmodule Mix.Tasks.Rn.Sources do
       [
         s.name != e.name && "name #{s.name} -> #{e.name}",
         s.active != e.active && "active #{s.active} -> #{e.active}",
-        (s.config || %{}) != e.config && "scope #{inspect(e.config)}",
-        (e.active and (not s.active or (s.config || %{}) != e.config)) && "sync"
+        scope(s.config) != scope(e.config) && "scope #{inspect(scope(e.config))}, full pass",
+        pr_toggle(s.config, e.config),
+        (e.active and not s.active) && "sync"
       ]
       |> Enum.filter(& &1)
 
@@ -70,6 +71,16 @@ defmodule Mix.Tasks.Rn.Sources do
 
   defp describe({:deactivate, s}), do: "- #{s.name}: not in file, deactivated (chunks kept)"
   defp describe({:unchanged, s}), do: "= #{s.name}"
+
+  defp scope(config), do: Map.delete(config || %{}, "pull_requests")
+
+  defp pr_toggle(old, new) do
+    case {(old || %{})["pull_requests"] == true, new["pull_requests"] == true} do
+      {false, true} -> "pull_requests on, PR sync"
+      {true, false} -> "pull_requests off"
+      _ -> false
+    end
+  end
 
   defp label(%{source_type: :drive_folder, config: config}), do: "drive #{inspect(config)}"
   defp label(e), do: e.identifier

@@ -44,6 +44,27 @@ defmodule RetrievalNodeWeb.IndexUITest do
       assert row =~ ~r/>\s*3\s*/
     end
 
+    test "PR and partial chips reflect a git source's options", %{conn: conn, source: source} do
+      {:ok, view, _html} = live(conn, ~p"/")
+      row = view |> element("#source-#{source.id}") |> render()
+      refute row =~ ">\n      PR\n"
+      refute row =~ "partial"
+
+      source
+      |> Source.update_changeset(%{
+        config: %{"pull_requests" => true, "exclude" => ["homeassistant/components/*"]}
+      })
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      row = view |> element("#source-#{source.id}") |> render()
+      assert row =~ ~r/badge-info[^>]*>\s*PR\s*</
+      assert row =~ ~r/title="Excluded paths: homeassistant\/components\/\*"[^>]*>\s*partial\s*</
+
+      {:ok, _view, html} = live(conn, ~p"/sources/#{source.id}")
+      assert html =~ ~r/>\s*partial\s*</
+    end
+
     test "shows the database size and per-table storage", %{conn: conn} do
       {:ok, view, html} = live(conn, ~p"/")
 
