@@ -64,10 +64,11 @@ mix precommit      # warnings-as-errors compile, format, tests
 
 ## Configuration
 
-Everything comes from environment variables. They can be set in the
+Configuration comes from environment variables. They can be set in the
 environment, or in an optional, git-ignored `.env` that mise loads into every
 command run in the repo (`.env.example` is the template). When `.env` exists,
-its values win over the shell environment.
+its values win over the shell environment. The app never writes `.env`:
+credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 
 | Variable | Used for |
 |---|---|
@@ -76,7 +77,8 @@ its values win over the shell environment.
 | `OLLAMA_ENDPOINT` | Ollama server for embeddings, e.g. `http://localhost:11434` (see [Embeddings](#embeddings)). Unset: in-process CPU model. |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
-| `GOOGLE_REFRESH_TOKEN` | Google Drive access, obtained from the `/connections` page. |
+| `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/connections` page. |
+| `DATA_DIR` | Where the app writes its own data, e.g. `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `sources.toml`; use an absolute path for a release). |
 | `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
@@ -191,9 +193,10 @@ One-time setup:
 3. Create an OAuth client ID of type **Desktop app**, and set
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 4. Open `/connections` in the UI and click **Connect Google Drive**. Google redirects
-   back to `/google/callback`; the refresh token is then used until the server
-   restarts and **shown once**. Nothing is written to disk: set
-   `GOOGLE_REFRESH_TOKEN` to keep it.
+   back to `/google/callback`, and the refresh token is stored in
+   `DATA_DIR/secrets.toml` (mode 0600, never displayed) and used from then on,
+   across restarts. **Disconnect** on the same page forgets it.
+   `GOOGLE_REFRESH_TOKEN`, if set, overrides the stored token.
 
 When the server runs on another machine than the browser, Google's redirect to
 `localhost` fails to load: paste that page's URL into the form on `/connections`.

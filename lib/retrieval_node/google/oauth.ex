@@ -8,15 +8,21 @@ defmodule RetrievalNode.Google.OAuth do
   before expiry. Desktop clients accept any loopback redirect, so the redirect
   goes to the UI itself (`http://localhost:<port>/google/callback`).
 
-  Config (`config/runtime.exs`, from the environment):
+  The client comes from the environment (`config/runtime.exs`):
 
       config :retrieval_node, :google,
         client_id: "...",        # GOOGLE_CLIENT_ID
         client_secret: "...",    # GOOGLE_CLIENT_SECRET
-        refresh_token: "..."     # GOOGLE_REFRESH_TOKEN
+        refresh_token: "..."     # GOOGLE_REFRESH_TOKEN (optional override)
+
+  The refresh token obtained on the Connections page is stored in
+  `Secrets` (`google_refresh_token` in `<data dir>/secrets.toml`).
+  `GOOGLE_REFRESH_TOKEN`, when set, takes precedence over it.
 
   Tests set `access_token:` directly to skip the token endpoint.
   """
+
+  alias RetrievalNode.Secrets
 
   @scopes ~w(
     https://www.googleapis.com/auth/drive.readonly
@@ -25,13 +31,31 @@ defmodule RetrievalNode.Google.OAuth do
   @auth_url "https://accounts.google.com/o/oauth2/v2/auth"
   @token_url "https://oauth2.googleapis.com/token"
   @cache_key {__MODULE__, :access_token}
+  @secret_key "google_refresh_token"
   @expiry_margin_s 60
 
   @doc "Whether a client id and secret are configured."
   def configured?, do: present?(config()[:client_id]) and present?(config()[:client_secret])
 
   @doc "Whether a refresh token (or a test access token) is configured."
-  def authorized?, do: present?(config()[:refresh_token]) or present?(config()[:access_token])
+  def authorized?, do: present?(refresh_token()) or present?(config()[:access_token])
+
+  @doc "Where the refresh token comes from: `:env`, `:secrets` or nil."
+  def token_source do
+    cond do
+      present?(config()[:refresh_token]) -> :env
+      present?(Secrets.get(@secret_key)) -> :secrets
+      true -> nil
+    end
+  end
+
+  # The environment wins, so an operator can always override the stored token.
+  defp refresh_token do
+    case config()[:refresh_token] do
+      token when is_binary(token) and token != "" -> token
+      _ -> Secrets.get(@secret_key)
+    end
+  end
 
   @doc "URL the user opens to grant access; Google sends them back to `redirect_uri`."
   def authorize_url(state, redirect_uri) do
@@ -76,7 +100,7 @@ defmodule RetrievalNode.Google.OAuth do
         {:ok, cfg[:access_token]}
 
       # An empty GOOGLE_REFRESH_TOKEN= is "not authorized", not a token to send.
-      not present?(cfg[:refresh_token]) ->
+      not present?(refresh_token()) ->
         {:error, :google_not_authorized}
 
       true ->
@@ -98,17 +122,24 @@ defmodule RetrievalNode.Google.OAuth do
   def invalidate, do: :persistent_term.erase(@cache_key)
 
   @doc """
-  Uses `refresh` for this running node only (until restart). Persisting it
-  — GOOGLE_REFRESH_TOKEN in the environment — is left to the operator.
+  Stores `refresh` (from a consent on the Connections page) in `Secrets`;
+  it is used right away and after restarts.
   """
-  def use_refresh_token(refresh) when is_binary(refresh) do
-    Application.put_env(:retrieval_node, :google, Keyword.put(config(), :refresh_token, refresh))
+  def store_refresh_token(refresh) when is_binary(refresh) do
+    :ok = Secrets.put(@secret_key, refresh)
+    invalidate()
+    :ok
+  end
+
+  @doc "Forgets the stored refresh token (Disconnect)."
+  def forget_refresh_token do
+    :ok = Secrets.delete(@secret_key)
     invalidate()
     :ok
   end
 
   defp refresh do
-    case token_request(grant_type: "refresh_token", refresh_token: config()[:refresh_token]) do
+    case token_request(grant_type: "refresh_token", refresh_token: refresh_token()) do
       {:ok, %{"access_token" => token, "expires_in" => ttl}} ->
         expires_at = System.system_time(:second) + ttl - @expiry_margin_s
         :persistent_term.put(@cache_key, {token, expires_at})

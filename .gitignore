@@ -51,3 +51,6 @@ retrieval_node-*.tar
 # The real list of indexed sources (private repo names, Drive ids).
 # Template: sources.example.toml
 /sources.toml
+
+# App-written data (secrets.toml with OAuth tokens). DATA_DIR in prod.
+/data/
