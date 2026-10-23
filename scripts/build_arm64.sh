@@ -57,6 +57,14 @@ log "XDG_CACHE_HOME=$XDG_CACHE_HOME"
 log "mix deps.get --only prod"
 mix deps.get --only prod
 
+# GitHub-hosted artifacts fetched with curl: OTP 29.1 :httpc rejects the ~11 KB
+# headers of GitHub release downloads (see the script).
+: "${RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH:=$HOME/.cache/github-artifacts/rustler_precompiled}"
+: "${XLA_CACHE_DIR:=$HOME/.cache/github-artifacts/xla}"
+export RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH XLA_CACHE_DIR
+log "scripts/prefetch_github_artifacts.sh --tailwind"
+scripts/prefetch_github_artifacts.sh --tailwind
+
 log "mix compile (MIX_ENV=prod) — compiles tree-sitter NIF on-device, expect 5-15 min"
 mix compile
 

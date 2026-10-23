@@ -45,6 +45,14 @@ COPY mix.exs mix.lock ./
 RUN mix deps.get --only $MIX_ENV
 RUN mkdir config
 COPY config/config.exs config/${MIX_ENV}.exs config/
+
+# GitHub-hosted artifacts (tree-sitter NIF, XLA archive, Tailwind) fetched with
+# curl: OTP 29.1 :httpc rejects the ~11 KB headers of GitHub release downloads.
+ENV RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH=/root/.cache/github-artifacts/rustler_precompiled \
+    XLA_CACHE_DIR=/root/.cache/github-artifacts/xla
+COPY scripts/prefetch_github_artifacts.sh scripts/
+RUN scripts/prefetch_github_artifacts.sh --tailwind
+
 RUN mix deps.compile
 
 RUN mix assets.setup
