@@ -136,6 +136,48 @@ defmodule RetrievalNode.Ingest.Drive do
   @doc "A shared drive by id, or `{:error, :not_found}`."
   def get_drive(id), do: get("/drive/v3/drives/#{seg(id)}", fields: "id,name")
 
+  @doc """
+  What a `[drive] include` id points to, for the Sources editor:
+  `{:ok, %{name:, kind: :shared_drive | :folder}}`.
+  """
+  def describe(id) do
+    case get_drive(id) do
+      {:ok, %{"name" => name}} ->
+        {:ok, %{name: name, kind: :shared_drive}}
+
+      {:error, :not_found} ->
+        case get_file(id, "id,name,mimeType") do
+          {:ok, %{"name" => name, "mimeType" => @folder_mime}} ->
+            {:ok, %{name: name, kind: :folder}}
+
+          {:ok, _file} ->
+            {:error, :not_a_folder}
+
+          other ->
+            other
+        end
+
+      other ->
+        other
+    end
+  end
+
+  @doc """
+  The id in a pasted shared drive or folder URL
+  (`https://drive.google.com/drive/folders/<id>`, `…/u/0/folders/<id>`,
+  `…?id=<id>`), or the input itself when it already is an id.
+  """
+  def id_from_input(input) do
+    input = String.trim(input)
+
+    cond do
+      Regex.match?(~r/\A[A-Za-z0-9_-]+\z/, input) -> {:ok, input}
+      match = Regex.run(~r{/folders/([A-Za-z0-9_-]+)}, input) -> {:ok, Enum.at(match, 1)}
+      match = Regex.run(~r{[?&]id=([A-Za-z0-9_-]+)}, input) -> {:ok, Enum.at(match, 1)}
+      true -> :error
+    end
+  end
+
   @doc "A file's metadata (`fields` defaults to what the policy needs)."
   def get_file(id, fields \\ @file_fields) do
     get("/drive/v3/files/#{seg(id)}", fields: fields, supportsAllDrives: true)

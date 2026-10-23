@@ -267,6 +267,94 @@ defmodule RetrievalNode.SourcesFileTest do
     end
   end
 
+  describe "encode/1, load_with_hash/1 and save/3" do
+    @describetag :tmp_dir
+
+    defp entries! do
+      {:ok, entries} =
+        SourcesFile.parse(%{
+          "git" => [
+            git("adr", @url_a),
+            git("core", @url_b, %{
+              "active" => false,
+              "exclude" => ["docs/*", "!docs/\"quoted\""],
+              "pull_requests" => true
+            })
+          ],
+          "drive" => %{"my_drive" => false, "shared_with_me" => true, "include" => ["0AbC"]}
+        })
+
+      entries
+    end
+
+    test "encoding then parsing gives the same entries back" do
+      entries = entries!()
+      assert {:ok, doc} = Toml.decode(SourcesFile.encode(entries))
+      assert SourcesFile.parse(doc) == {:ok, entries}
+
+      assert {:ok, doc} = Toml.decode(SourcesFile.encode([]))
+      assert SourcesFile.parse(doc) == {:ok, []}
+    end
+
+    test "only non-default git options are written" do
+      {:ok, [adr]} = SourcesFile.parse(%{"git" => [git("adr", @url_a)]})
+      body = SourcesFile.encode([adr])
+
+      assert body =~ ~s([[git]]\nname = "adr"\nurl = "#{@url_a}"\n)
+      refute body =~ "active"
+      refute body =~ "exclude"
+    end
+
+    test "a missing file reads as no entries; save creates it", %{tmp_dir: dir} do
+      path = Path.join([dir, "sub", "sources.toml"])
+      assert {:ok, [], nil} = SourcesFile.load_with_hash(path)
+
+      entries = entries!()
+      assert {:ok, hash} = SourcesFile.save(path, entries, nil)
+      assert {:ok, ^entries, ^hash} = SourcesFile.load_with_hash(path)
+      assert hash == SourcesFile.hash(File.read!(path))
+    end
+
+    test "refuses to overwrite a file changed since it was read", %{tmp_dir: dir} do
+      path = Path.join(dir, "sources.toml")
+      File.write!(path, ~s([[git]]\nname = "adr"\nurl = "#{@url_a}"\n))
+      {:ok, _entries, hash} = SourcesFile.load_with_hash(path)
+
+      File.write!(path, ~s([[git]]\nname = "other"\nurl = "#{@url_b}"\n))
+      assert {:error, :conflict} = SourcesFile.save(path, entries!(), hash)
+      assert {:error, :conflict} = SourcesFile.save(path, entries!(), nil)
+      assert File.read!(path) =~ "other"
+    end
+
+    test "refuses invalid entries without writing", %{tmp_dir: dir} do
+      path = Path.join(dir, "sources.toml")
+      [adr | _] = entries!()
+
+      assert {:error, "duplicate name \"adr\""} =
+               SourcesFile.save(path, [adr, %{adr | identifier: @url_b}], nil)
+
+      refute File.exists?(path)
+    end
+
+    test "reports a file it can't write", %{tmp_dir: dir} do
+      path = Path.join(dir, "sources.toml")
+      File.write!(path, "")
+      File.chmod!(dir, 0o500)
+      on_exit(fn -> File.chmod!(dir, 0o700) end)
+
+      assert {:error, "cannot write " <> _} =
+               SourcesFile.save(path, entries!(), SourcesFile.hash(""))
+
+      assert File.ls!(dir) == ["sources.toml"]
+    end
+
+    test "reports an invalid file", %{tmp_dir: dir} do
+      path = Path.join(dir, "sources.toml")
+      File.write!(path, "[[git]]\nname = \"adr\"\n")
+      assert {:error, "[[git]] #1: " <> _} = SourcesFile.load_with_hash(path)
+    end
+  end
+
   defp strip({:deactivate, s}), do: {:deactivate, %{id: s.id}}
   defp strip(other), do: other
 end

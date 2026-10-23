@@ -30,6 +30,7 @@ defmodule RetrievalNodeWeb.Router do
     pipe_through :browser
 
     live "/", SourcesLive, :index
+    live "/sources/edit", SourcesEditLive, :edit
     live "/sources/:id", SourceLive, :show
     live "/search", SearchLive, :index
     live "/connections", ConnectionsLive, :index

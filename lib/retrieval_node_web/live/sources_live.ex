@@ -90,7 +90,12 @@ defmodule RetrievalNodeWeb.SourcesLive do
       <.sources_file status={@sources_file} />
 
       <section>
-        <h2 class="mb-2 text-lg font-semibold">Sources</h2>
+        <div class="mb-2 flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Sources</h2>
+          <.link id="edit-sources" navigate={~p"/sources/edit"} class="btn btn-sm">
+            <.icon name="hero-pencil-square" class="size-4" /> Edit sources
+          </.link>
+        </div>
         <div class="overflow-x-auto rounded-box border border-base-300">
           <table id="sources" class="table table-sm">
             <thead>
@@ -150,7 +155,8 @@ defmodule RetrievalNodeWeb.SourcesLive do
               </tr>
               <tr :if={@rows == []}>
                 <td colspan="7" class="py-6 text-center opacity-60">
-                  No source registered yet. Add one with <code>mix rn.seed</code>.
+                  No source registered yet.
+                  <.link navigate={~p"/sources/edit"} class="link">Add repositories or Google Drive</.link>.
                 </td>
               </tr>
             </tbody>
@@ -241,7 +247,11 @@ defmodule RetrievalNodeWeb.SourcesLive do
           <code>{@status.path}</code> not applied, sources left unchanged: {@status.error}
         </span>
       </div>
-      <p :if={!@status.error && @status.applied_at} class="opacity-70">
+      <p :if={@status.missing} class="opacity-70">
+        No <code>{@status.path}</code> yet.
+        <.link navigate={~p"/sources/edit"} class="link">Edit sources</.link> to create it.
+      </p>
+      <p :if={!@status.error && !@status.missing && @status.applied_at} class="opacity-70">
         <code>{@status.path}</code> applied {Format.ago(@status.applied_at)}
         · {@status.changes} source(s) changed · re-checked automatically
       </p>

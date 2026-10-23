@@ -6,11 +6,17 @@ defmodule RetrievalNode.Ingest.GitHub do
 
   `merged_prs_page/3` walks a search sorted by `updated` ascending, so a
   caller can store the last `updatedAt` it saw as its watermark and resume
-  from there. Req options are extended by `:github_req_options` (tests point
-  them at a `Req.Test` plug).
+  from there. `list_repos/0` feeds the Sources editor's repo picker. Req
+  options are extended by `:github_req_options` (tests point them at a
+  `Req.Test` plug).
   """
 
   alias RetrievalNode.GitHub.OAuth
+
+  @api_url "https://api.github.com"
+  @graphql_url @api_url <> "/graphql"
+  # 100 repos a page.
+  @max_repo_pages 30
 
   @query """
   query($q: String!, $after: String, $owner: String!, $name: String!) {
@@ -78,6 +84,49 @@ defmodule RetrievalNode.Ingest.GitHub do
     end
   end
 
+  @doc """
+  The repos the token can read, sorted by full name: `GET /user/repos`,
+  which for a GitHub App token means those where the App is installed and
+  the user has access. Each is `%{full_name:, clone_url:, private:,
+  description:}`.
+  """
+  def list_repos do
+    collect_repos(@api_url <> "/user/repos?per_page=100&sort=full_name", [], @max_repo_pages)
+  end
+
+  defp collect_repos(_url, _acc, 0), do: {:error, :github_too_many_repos}
+
+  defp collect_repos(url, acc, pages_left) do
+    with {:ok, resp} <- request(method: :get, url: url) do
+      repos =
+        for r <- resp.body do
+          %{
+            full_name: r["full_name"],
+            clone_url: r["clone_url"],
+            private: r["private"] == true,
+            description: r["description"]
+          }
+        end
+
+      case next_link(resp) do
+        nil -> {:ok, Enum.sort_by(acc ++ repos, &String.downcase(&1.full_name))}
+        next -> collect_repos(next, acc ++ repos, pages_left - 1)
+      end
+    end
+  end
+
+  # `Link: <https://api.github.com/user/repos?page=2>; rel="next", ...`
+  defp next_link(resp) do
+    resp
+    |> Req.Response.get_header("link")
+    |> Enum.find_value(fn header ->
+      case Regex.run(~r/<([^>]+)>;\s*rel="next"/, header) do
+        [_, url] -> url
+        _ -> nil
+      end
+    end)
+  end
+
   @doc false
   def to_pr(repo, node) do
     %{
@@ -140,21 +189,26 @@ defmodule RetrievalNode.Ingest.GitHub do
 
   # --- transport ---
 
-  @graphql_url "https://api.github.com/graphql"
-
   defp graphql(query, vars) do
+    with {:ok, %{body: body}} <-
+           request(method: :post, url: @graphql_url, json: %{query: query, variables: vars}) do
+      case body do
+        %{"errors" => [_ | _] = errors} -> graphql_errors(errors)
+        body -> {:ok, body}
+      end
+    end
+  end
+
+  defp request(opts) do
     with {:ok, token} <- OAuth.access_token() do
       req =
-        [url: @graphql_url, json: %{query: query, variables: vars}, auth: {:bearer, token}]
-        |> Keyword.merge(retry: false, finch: [name: RetrievalNode.Finch])
+        [auth: {:bearer, token}, retry: false, finch: [name: RetrievalNode.Finch]]
+        |> Keyword.merge(opts)
         |> Keyword.merge(Application.get_env(:retrieval_node, :github_req_options, []))
 
-      case Req.post(req) do
-        {:ok, %{status: 200, body: %{"errors" => [_ | _] = errors}}} ->
-          graphql_errors(errors)
-
-        {:ok, %{status: 200, body: body}} ->
-          {:ok, body}
+      case Req.request(req) do
+        {:ok, %{status: 200} = resp} ->
+          {:ok, resp}
 
         {:ok, %{status: 401}} ->
           OAuth.invalidate()

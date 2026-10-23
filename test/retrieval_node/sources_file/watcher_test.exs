@@ -50,7 +50,7 @@ defmodule RetrievalNode.SourcesFile.WatcherTest do
     assert active() == ["a", "b"]
 
     File.rm!(path)
-    assert %{error: "cannot read " <> _} = Watcher.check_now()
+    assert %{error: nil, missing: true} = Watcher.check_now()
     assert active() == ["a", "b"]
 
     # Fixed again: applied, error cleared.

@@ -1,8 +1,7 @@
 # Slow Henry + Postgres/pgvector. See "Running with Docker" in README.md.
 #
 #   cp .env.example .env              # then set SECRET_KEY_BASE (and the rest)
-#   cp sources.example.toml sources.toml
-#   docker compose up -d
+#   docker compose up -d              # then pick the sources at /sources/edit
 #
 # Compose reads .env both for the ${...} values below and for the app's own
 # environment (env_file), so the database credentials are defined once.
@@ -42,14 +41,12 @@ services:
       PHX_HOST: ${PHX_HOST:-localhost}
       # PORT in .env only changes the host side of the mapping below.
       PORT: 4000
-      # Edited on the host, re-read by the app every SOURCES_WATCH_INTERVAL.
-      SOURCES_FILE: /etc/slow-henry/sources.toml
     ports:
       - "${PORT:-4000}:4000"
     volumes:
-      # secrets.toml, git mirrors, the embedding model cache.
+      # sources.toml (edited from /sources/edit), secrets.toml, git mirrors,
+      # the embedding model cache.
       - app-data:/var/lib/retrieval_node
-      - ./sources.toml:/etc/slow-henry/sources.toml:ro
 
   # Optional: embeddings on Ollama instead of the in-process CPU model. Uncomment,
   # set OLLAMA_ENDPOINT=http://ollama:11434 in .env, then

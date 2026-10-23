@@ -13,6 +13,8 @@ defmodule RetrievalNode.Secrets do
   a rename, so the file is never half-written, and keep mode 0600.
   """
 
+  alias RetrievalNode.TomlWriter
+
   @file_name "secrets.toml"
   @key_format ~r/\A[a-z][a-z0-9_]*\z/
 
@@ -69,25 +71,12 @@ defmodule RetrievalNode.Secrets do
         "# Credentials obtained by Slow Henry (OAuth tokens). Keep it private:",
         "# git-ignored, mode 0600. Configuration goes in the environment instead.",
         ""
-      ] ++ for({k, v} <- Enum.sort(secrets), do: "#{k} = #{encode(v)}")
+      ] ++ for({k, v} <- Enum.sort(secrets), do: "#{k} = #{TomlWriter.string(v)}")
 
     File.write!(tmp, Enum.join(body, "\n") <> "\n")
     File.chmod!(tmp, 0o600)
     File.rename!(tmp, path())
     :ok
-  end
-
-  # A TOML basic string: escape backslash, quote and control characters.
-  defp encode(value) do
-    escaped =
-      value
-      |> String.replace("\\", "\\\\")
-      |> String.replace("\"", "\\\"")
-      |> String.replace(~r/[\x00-\x1f\x7f]/u, fn <<c>> ->
-        "\\u" <> String.pad_leading(Integer.to_string(c, 16), 4, "0")
-      end)
-
-    "\"" <> escaped <> "\""
   end
 
   defp valid_key!(key) do
