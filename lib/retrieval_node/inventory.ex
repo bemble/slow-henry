@@ -164,6 +164,30 @@ defmodule RetrievalNode.Inventory do
     %{counts: counts, errored: errored}
   end
 
+  @doc """
+  Disk usage: the whole database, and each table of the public schema with
+  its indexes and TOAST (`pg_total_relation_size`), largest first.
+  """
+  def storage do
+    %{rows: [[total]]} = Repo.query!("SELECT pg_database_size(current_database())")
+
+    %{rows: tables} =
+      Repo.query!("""
+      SELECT c.relname, pg_total_relation_size(c.oid), pg_indexes_size(c.oid)
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r'
+      ORDER BY 2 DESC
+      """)
+
+    %{
+      total: total,
+      tables:
+        Enum.map(tables, fn [name, size, indexes] ->
+          %{name: name, size: size, indexes: indexes}
+        end)
+    }
+  end
+
   @doc "Enqueue a sync for a source, collapsing onto an already queued one."
   def enqueue_sync(%Source{} = source) do
     worker = Map.fetch!(@sync_workers, source.source_type)

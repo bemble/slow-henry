@@ -16,6 +16,15 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
+# Google OAuth for the Drive source (see RetrievalNode.Google.OAuth and
+# the UI's Google page at /google). Read in every env but test, which stubs it.
+if config_env() != :test do
+  config :retrieval_node, :google,
+    client_id: System.get_env("GOOGLE_CLIENT_ID"),
+    client_secret: System.get_env("GOOGLE_CLIENT_SECRET"),
+    refresh_token: System.get_env("GOOGLE_REFRESH_TOKEN")
+end
+
 if System.get_env("PHX_SERVER") do
   config :retrieval_node, RetrievalNodeWeb.Endpoint, server: true
 end

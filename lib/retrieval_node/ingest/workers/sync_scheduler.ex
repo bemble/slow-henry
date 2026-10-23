@@ -20,7 +20,7 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
   }
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"kind" => kind}}) do
+  def perform(%Oban.Job{args: %{"kind" => kind} = args}) do
     {source_type, worker} = Map.fetch!(@kinds, kind)
 
     Source
@@ -30,7 +30,10 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
       # A unique-constraint overlap comes back as {:ok, %{conflict?: true}} — fine.
       # A genuine {:error, _} would otherwise be swallowed and the cron tick would
       # look healthy despite the fan-out failing; surface it so Oban retries.
-      case Oban.insert(worker.new(%{"source_id" => source.id})) do
+      # `mode` (e.g. DriveSync's daily "full" pass) is forwarded as-is.
+      job_args = Map.merge(Map.take(args, ["mode"]), %{"source_id" => source.id})
+
+      case Oban.insert(worker.new(job_args)) do
         {:ok, _job} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end

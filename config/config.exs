@@ -59,7 +59,11 @@ config :retrieval_node, Oban,
      crontab: [
        {"*/15 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "git"}},
        {"0 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "jira"}},
-       {"*/30 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "drive"}}
+       {"*/30 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "drive"}},
+       # Daily full Drive pass (scope/classification drift the changes feed can't
+       # express). Off the :00/:30 ticks so it doesn't collapse into an incremental.
+       {"15 4 * * *", RetrievalNode.Ingest.Workers.SyncScheduler,
+        args: %{"kind" => "drive", "mode" => "full"}}
      ]}
   ]
 

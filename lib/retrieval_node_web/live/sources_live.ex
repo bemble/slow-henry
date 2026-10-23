@@ -44,6 +44,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
       rows: rows,
       jobs: jobs,
       source_names: names,
+      storage: Inventory.storage(),
       totals: %{
         sources: length(rows),
         chunks: Enum.sum_by(rows, & &1.chunks),
@@ -66,6 +67,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
         <.stat title="Chunks" value={@totals.chunks} />
         <.stat title="Pending" value={@totals.pending} />
         <.stat title="Sources indexing" value={@totals.indexing} />
+        <.stat title="Database" value={Format.bytes(@storage.total)} />
       </div>
 
       <section>
@@ -171,12 +173,41 @@ defmodule RetrievalNodeWeb.SourcesLive do
           </table>
         </div>
       </section>
+
+      <section>
+        <h2 class="mb-2 text-lg font-semibold">Storage</h2>
+        <div class="overflow-x-auto rounded-box border border-base-300">
+          <table id="storage" class="table table-sm">
+            <thead>
+              <tr>
+                <th>Table</th>
+                <th class="text-right">Total</th>
+                <th class="text-right">of which indexes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={t <- @storage.tables} id={"table-#{t.name}"}>
+                <td class="font-mono text-xs">{t.name}</td>
+                <td class="text-right tabular-nums">{Format.bytes(t.size)}</td>
+                <td class="text-right tabular-nums">{Format.bytes(t.indexes)}</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Whole database</td>
+                <td class="text-right tabular-nums">{Format.bytes(@storage.total)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
     </Layouts.app>
     """
   end
 
   attr :title, :string, required: true
-  attr :value, :integer, required: true
+  attr :value, :any, required: true
 
   defp stat(assigns) do
     ~H"""

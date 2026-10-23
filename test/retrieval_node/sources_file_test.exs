@@ -2,13 +2,13 @@ defmodule RetrievalNode.SourcesFileTest do
   use RetrievalNode.DataCase, async: true
   use Oban.Testing, repo: RetrievalNode.Repo
 
-  alias RetrievalNode.Ingest.Workers.RepoSync
+  alias RetrievalNode.Ingest.Workers.{DriveSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.SourcesFile
 
-  @url_a "https://github.com/NabuCasa/adr.git"
-  @url_b "https://github.com/NabuCasa/snitun.git"
+  @url_a "https://github.com/my-org/adr.git"
+  @url_b "https://github.com/my-org/other.git"
 
   defp git(name, url, extra \\ %{}), do: Map.merge(%{"name" => name, "url" => url}, extra)
 
@@ -78,6 +78,72 @@ defmodule RetrievalNode.SourcesFileTest do
     end
   end
 
+  describe "[drive]" do
+    test "parses scope with defaults" do
+      assert {:ok, [drive]} = SourcesFile.parse(%{"drive" => %{"include" => ["0AbC", "1x_Y-z"]}})
+
+      assert %{
+               source_type: :drive_folder,
+               identifier: "drive:me",
+               active: true,
+               config: %{"my_drive" => true, "include" => ["0AbC", "1x_Y-z"]}
+             } = drive
+    end
+
+    test "shared_with_me is off by default and stored only when on" do
+      assert {:ok, [%{config: config}]} = SourcesFile.parse(%{"drive" => %{}})
+      refute Map.has_key?(config, "shared_with_me")
+
+      assert {:ok, [%{config: %{"shared_with_me" => true}}]} =
+               SourcesFile.parse(%{"drive" => %{"shared_with_me" => true}})
+
+      assert {:ok, [_]} =
+               SourcesFile.parse(%{"drive" => %{"my_drive" => false, "shared_with_me" => true}})
+
+      assert {:error, "[drive]: `my_drive`, `shared_with_me` and `active` must be true or false"} =
+               SourcesFile.parse(%{"drive" => %{"shared_with_me" => "yes"}})
+    end
+
+    test "rejects bad drive tables and unknown sections" do
+      assert {:error, "[drive]: unknown key(s) folders"} =
+               SourcesFile.parse(%{"drive" => %{"folders" => []}})
+
+      assert {:error, "[drive]: `include` must be a list of Drive ids"} =
+               SourcesFile.parse(%{"drive" => %{"include" => ["a/b"]}})
+
+      assert {:error, "[drive]: nothing to index" <> _} =
+               SourcesFile.parse(%{"drive" => %{"my_drive" => false}})
+
+      assert {:error, "unknown section(s) slack"} = SourcesFile.parse(%{"slack" => %{}})
+    end
+
+    test "adding Drive queues a sync; changing its scope queues a full pass" do
+      {:ok, entries} = SourcesFile.parse(%{"drive" => %{}})
+      assert {:ok, [{:add, _}]} = SourcesFile.apply(entries)
+
+      source = Repo.get_by!(Source, source_type: :drive_folder)
+      assert_enqueued(worker: DriveSync, args: %{"source_id" => source.id})
+      Repo.delete_all(Oban.Job)
+
+      {:ok, entries} = SourcesFile.parse(%{"drive" => %{"include" => ["0AbC"]}})
+      assert {:ok, [{:update, _, _}]} = SourcesFile.apply(entries)
+      assert %{config: %{"include" => ["0AbC"]}} = Repo.get!(Source, source.id)
+      assert_enqueued(worker: DriveSync, args: %{"source_id" => source.id, "mode" => "full"})
+    end
+
+    test "removing [drive] deactivates the Drive source" do
+      drive =
+        Repo.insert!(%Source{
+          source_type: :drive_folder,
+          name: "Google Drive",
+          identifier: "drive:me"
+        })
+
+      assert {:ok, [{:deactivate, _}]} = SourcesFile.apply([])
+      assert %{active: false} = Repo.get!(Source, drive.id)
+    end
+  end
+
   describe "apply/1" do
     test "adds new sources and queues their first sync" do
       {:ok, entries} = SourcesFile.parse(%{"git" => [git("adr", @url_a)]})
@@ -125,7 +191,7 @@ defmodule RetrievalNode.SourcesFileTest do
       refute_enqueued(worker: RepoSync, args: %{"source_id" => renamed.id})
     end
 
-    test "leaves non-git sources alone" do
+    test "leaves Jira sources alone" do
       jira =
         Repo.insert!(%Source{
           source_type: :jira_project,

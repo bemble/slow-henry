@@ -244,7 +244,10 @@ defmodule RetrievalNode.Ingest.FileIngest do
     |> Base.encode16(case: :lower)
   end
 
-  defp file_prefix(row), do: Map.get(row.metadata || %{}, "path") || row.natural_key
+  defp file_prefix(row) do
+    metadata = row.metadata || %{}
+    Map.get(metadata, "path") || Map.get(metadata, "name") || row.natural_key
+  end
 
   # Called only from inside a terminal `Repo.transaction` (`write/7`,
   # `reconcile_and_reap/3`), so the append-only audit rows commit exactly when

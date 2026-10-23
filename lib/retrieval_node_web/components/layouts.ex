@@ -31,7 +31,9 @@ defmodule RetrievalNodeWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://phoenix.hexdocs.pm/scopes.html)"
 
-  attr :active, :atom, default: nil, doc: "the nav entry to highlight (:sources | :search)"
+  attr :active, :atom,
+    default: nil,
+    doc: "the nav entry to highlight (:sources | :search | :google)"
 
   slot :inner_block, required: true
 
@@ -59,6 +61,14 @@ defmodule RetrievalNodeWeb.Layouts do
               class={["btn btn-ghost btn-sm", @active == :search && "btn-active"]}
             >
               Search
+            </.link>
+          </li>
+          <li>
+            <.link
+              navigate={~p"/google"}
+              class={["btn btn-ghost btn-sm", @active == :google && "btn-active"]}
+            >
+              Google
             </.link>
           </li>
           <li>

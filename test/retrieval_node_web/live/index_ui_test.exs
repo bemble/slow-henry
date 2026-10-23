@@ -44,6 +44,13 @@ defmodule RetrievalNodeWeb.IndexUITest do
       assert row =~ ~r/>\s*3\s*/
     end
 
+    test "shows the database size and per-table storage", %{conn: conn} do
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert html =~ ~r/Database.*?\d+(\.\d+)? (B|KB|MB|GB)/s
+      assert view |> element("#table-chunks") |> render() =~ ~r/(B|KB|MB|GB)/
+    end
+
     test "a source with staged files shows as indexing", %{conn: conn, source: source} do
       Repo.insert!(%RetrievalNode.Retrieval.PendingChunk{
         source: "git",

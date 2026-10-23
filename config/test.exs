@@ -71,3 +71,6 @@ config :phoenix, :plug_init_mode, :runtime
 # Enable helpful, but potentially expensive runtime checks
 config :phoenix_live_view,
   enable_expensive_runtime_checks: true
+
+# Drive/Google: a fixed access token (no token endpoint) and Req.Test plugs.
+config :retrieval_node, :google, access_token: "test-token"

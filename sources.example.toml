@@ -1,4 +1,4 @@
-# Git repos indexed by Slow Henry.
+# Sources indexed by Slow Henry (git repos + Google Drive).
 # Copy to sources.toml (git-ignored) and apply with `mix rn.sources`
 # (--dry-run to preview). SOURCES_FILE=path points at another file.
 #
@@ -15,3 +15,13 @@ name = "old-repo"
 url = "https://github.com/my-org/old-repo.git"
 active = false
 
+# Google Drive: Docs you own, optionally the Docs shared directly with you,
+# plus the shared drives / folders listed in `include` (ids from their URLs,
+# e.g. drive.google.com/drive/folders/<ID>; folders shared with you are only
+# crawled when listed there).
+# Only docs without a Classification label, or classified Public / Internal,
+# are indexed. Authorize once from the UI's Google page (/google).
+[drive]
+my_drive = true
+shared_with_me = false
+include = ["0AbCdEfGhIjKlMnOpQ", "1aBcDeFgHiJkLmNoPqRsTuVwXyZ"]
