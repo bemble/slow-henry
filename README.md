@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/imgs/icon-text.png" alt="Slow Henry" width="240" />
+</p>
+
 # Slow Henry
 
 A self-hosted **MCP knowledge server** (the Elixir app is `RetrievalNode`) that
