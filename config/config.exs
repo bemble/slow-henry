@@ -132,6 +132,9 @@ config :tailwind,
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ]
 
+# App-written data (secrets.toml); overridden by DATA_DIR (config/runtime.exs).
+config :retrieval_node, :data_dir, "data"
+
 # Configures Elixir's Logger
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",

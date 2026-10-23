@@ -17,7 +17,8 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 # Google OAuth for the Drive source (see RetrievalNode.Google.OAuth and
-# the UI's Connections page at /connections). Read in every env but test, which stubs it.
+# the UI's Connections page at /connections, stored by RetrievalNode.Secrets;
+# GOOGLE_REFRESH_TOKEN overrides it). Read in every env but test, which stubs it.
 if config_env() != :test do
   config :retrieval_node, :google,
     client_id: System.get_env("GOOGLE_CLIENT_ID"),
@@ -37,6 +38,14 @@ if config_env() != :test do
       endpoint: endpoint,
       model: System.get_env("OLLAMA_EMBEDDING_MODEL") || "nomic-embed-text"
   end
+end
+
+# Where the app keeps what it writes itself (secrets.toml, …): DATA_DIR,
+# else ./data in dev and /var/lib/retrieval_node in a release.
+cond do
+  dir = System.get_env("DATA_DIR") -> config :retrieval_node, :data_dir, dir
+  config_env() == :prod -> config :retrieval_node, :data_dir, "/var/lib/retrieval_node"
+  true -> :ok
 end
 
 # How often the server re-reads sources.toml for changes (seconds).

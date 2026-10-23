@@ -77,3 +77,6 @@ config :retrieval_node, :google, access_token: "test-token"
 
 # sources.toml is applied by tests explicitly, never by a background watcher.
 config :retrieval_node, :sources_watch, false
+
+# Never the dev data dir: tests that touch secrets set their own tmp dir.
+config :retrieval_node, :data_dir, Path.join(System.tmp_dir!(), "slow-henry-test-data")
