@@ -8,8 +8,10 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   pulled, a one-text embedding round trip); "Check again" re-probes.
 
   "Connect" sends the browser to Google's consent screen; Google redirects
-  back to `/google/callback` on this same server (a Desktop OAuth client
-  accepts any loopback redirect). The code is exchanged there and the refresh
+  back to `/google/callback` on the endpoint's URL (`localhost:<port>`, or
+  `PHX_HOST` in prod). A Desktop OAuth client accepts any loopback redirect;
+  another host needs a "Web application" client with that exact redirect URI
+  registered. The code is exchanged there and the refresh
   token stored in `<data dir>/secrets.toml` (`RetrievalNode.Secrets`); it is
   never displayed. "Disconnect" forgets it. `GOOGLE_REFRESH_TOKEN`, when set,
   overrides the stored one.
@@ -190,11 +192,9 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
     end
   end
 
-  # Loopback, as Desktop clients require, on the port this server listens on.
-  defp redirect_uri do
-    port = RetrievalNodeWeb.Endpoint.config(:http)[:port]
-    "http://localhost:#{port}/google/callback"
-  end
+  # The endpoint's public URL: `localhost:<port>` unless PHX_HOST says
+  # otherwise (a non-loopback host needs a "Web application" client).
+  defp redirect_uri, do: url(~p"/google/callback")
 
   defp complete(socket, params) do
     case exchange(params) do
