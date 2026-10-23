@@ -53,6 +53,7 @@ defmodule RetrievalNodeWeb.SourceLive do
         <h1 class="mt-1 text-2xl font-semibold">
           {@source.name}
           <span class="badge badge-ghost align-middle">{Format.source_type(@source.source_type)}</span>
+          <.option_chips source={@source} class="align-middle" />
         </h1>
         <p class="text-sm opacity-70">
           {@source.identifier} · last sync {Format.ago(@sync && @sync.last_synced_at)}
@@ -106,6 +107,37 @@ defmodule RetrievalNodeWeb.SourceLive do
         </section>
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :source, :map, required: true
+  attr :class, :string, default: nil
+
+  @doc "Chips for a git source's options: merged PRs indexed, paths excluded."
+  def option_chips(assigns) do
+    config = assigns.source.config || %{}
+
+    assigns =
+      assign(assigns,
+        prs: config["pull_requests"] == true,
+        exclude: config["exclude"] || []
+      )
+
+    ~H"""
+    <span
+      :if={@prs}
+      class={["badge badge-info badge-sm", @class]}
+      title="Merged pull requests are indexed, as pulls/N"
+    >
+      PR
+    </span>
+    <span
+      :if={@exclude != []}
+      class={["badge badge-warning badge-sm", @class]}
+      title={"Excluded paths: " <> Enum.join(@exclude, ", ")}
+    >
+      partial
+    </span>
     """
   end
 

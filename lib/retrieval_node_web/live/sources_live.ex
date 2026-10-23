@@ -3,7 +3,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
   use RetrievalNodeWeb, :live_view
 
   alias RetrievalNode.Inventory
-  alias RetrievalNodeWeb.Format
+  alias RetrievalNodeWeb.{Format, SourceLive}
 
   @refresh_ms 5_000
 
@@ -94,6 +94,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
                   <span class="badge badge-ghost badge-sm ml-1">
                     {Format.source_type(row.source.source_type)}
                   </span>
+                  <SourceLive.option_chips source={row.source} class="ml-1" />
                   <span :if={!row.source.active} class="badge badge-warning badge-sm ml-1">
                     inactive
                   </span>
