@@ -53,6 +53,17 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
       refute DrivePolicy.in_scope?(mine, scope(%{my_drive: false}), @no_parents)
     end
 
+    test "shared with me: only directly shared docs, only when shared_with_me is on" do
+      shared =
+        doc(%{"sharedWithMeTime" => "2026-10-01T09:00:00.000Z", "owners" => [%{"me" => false}]})
+
+      in_shared_folder = doc(%{"owners" => [%{"me" => false}]})
+
+      assert DrivePolicy.in_scope?(shared, scope(%{shared_with_me: true}), @no_parents)
+      refute DrivePolicy.in_scope?(shared, scope(%{shared_with_me: false}), @no_parents)
+      refute DrivePolicy.in_scope?(in_shared_folder, scope(%{shared_with_me: true}), @no_parents)
+    end
+
     test "shared drive by driveId" do
       file = doc(%{"driveId" => "drv"})
       assert DrivePolicy.in_scope?(file, scope(%{drives: MapSet.new(["drv"])}), @no_parents)

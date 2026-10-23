@@ -16,7 +16,7 @@ defmodule RetrievalNode.Ingest.Drive do
 
   @doc_mime "application/vnd.google-apps.document"
   @folder_mime "application/vnd.google-apps.folder"
-  @file_fields "id,name,mimeType,parents,driveId,trashed,modifiedTime,webViewLink,owners(me),labelInfo"
+  @file_fields "id,name,mimeType,parents,driveId,trashed,modifiedTime,webViewLink,owners(me),sharedWithMeTime,labelInfo"
   @page_size 1000
   @export_timeout :timer.minutes(2)
 
@@ -69,6 +69,15 @@ defmodule RetrievalNode.Ingest.Drive do
   # --- listing ---
 
   @doc "Google Docs owned by the user (My Drive)."
+  @doc "Google Docs shared directly with the user (not the contents of shared folders)."
+  def shared_with_me_docs(label_id) do
+    list_files(
+      "sharedWithMe = true and mimeType = '#{@doc_mime}' and trashed = false",
+      label_id,
+      corpora: "user"
+    )
+  end
+
   def my_drive_docs(label_id) do
     list_files(
       "'me' in owners and mimeType = '#{@doc_mime}' and trashed = false",

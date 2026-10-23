@@ -90,6 +90,20 @@ defmodule RetrievalNode.SourcesFileTest do
              } = drive
     end
 
+    test "shared_with_me is off by default and stored only when on" do
+      assert {:ok, [%{config: config}]} = SourcesFile.parse(%{"drive" => %{}})
+      refute Map.has_key?(config, "shared_with_me")
+
+      assert {:ok, [%{config: %{"shared_with_me" => true}}]} =
+               SourcesFile.parse(%{"drive" => %{"shared_with_me" => true}})
+
+      assert {:ok, [_]} =
+               SourcesFile.parse(%{"drive" => %{"my_drive" => false, "shared_with_me" => true}})
+
+      assert {:error, "[drive]: `my_drive`, `shared_with_me` and `active` must be true or false"} =
+               SourcesFile.parse(%{"drive" => %{"shared_with_me" => "yes"}})
+    end
+
     test "rejects bad drive tables and unknown sections" do
       assert {:error, "[drive]: unknown key(s) folders"} =
                SourcesFile.parse(%{"drive" => %{"folders" => []}})

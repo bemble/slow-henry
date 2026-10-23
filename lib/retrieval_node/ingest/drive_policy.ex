@@ -6,8 +6,9 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   A file is indexable when it is a non-trashed Google Doc, **in scope**, and
   **allowed by its classification**:
 
-    * scope — owned by the user (My Drive, when `my_drive` is on), in one of
-      the configured shared drives, or below one of the configured folders;
+    * scope — owned by the user (My Drive, when `my_drive` is on), shared
+      directly with the user (when `shared_with_me` is on), in one of the
+      configured shared drives, or below one of the configured folders;
     * classification — no Classification label at all, or a label whose
       selected choice(s) are all allowed (Public / Internal). A label applied
       without a value is *not* allowed: fail closed.
@@ -16,7 +17,12 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   alias RetrievalNode.Ingest.Drive
 
   @type classification :: %{label_id: String.t(), field_id: String.t(), allowed: MapSet.t()}
-  @type scope :: %{my_drive: boolean(), drives: MapSet.t(), folders: MapSet.t()}
+  @type scope :: %{
+          my_drive: boolean(),
+          shared_with_me: boolean(),
+          drives: MapSet.t(),
+          folders: MapSet.t()
+        }
 
   @max_depth 30
 
@@ -46,6 +52,7 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   @spec in_scope?(map(), scope(), (String.t() -> [String.t()])) :: boolean()
   def in_scope?(file, scope, parents_of) do
     (scope.my_drive and owned_by_me?(file)) or
+      (Map.get(scope, :shared_with_me, false) and shared_with_me?(file)) or
       MapSet.member?(scope.drives, file["driveId"]) or
       (MapSet.size(scope.folders) > 0 and
          below?(file["parents"] || [], scope.folders, parents_of, 0, MapSet.new()))
@@ -58,6 +65,10 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   end
 
   defp owned_by_me?(file), do: Enum.any?(file["owners"] || [], &(&1["me"] == true))
+
+  # Drive sets sharedWithMeTime on items shared directly with the user only,
+  # not on the contents of a shared folder.
+  defp shared_with_me?(file), do: is_binary(file["sharedWithMeTime"]) and not owned_by_me?(file)
 
   defp below?([], _folders, _parents_of, _depth, _seen), do: false
   defp below?(_ids, _folders, _parents_of, depth, _seen) when depth > @max_depth, do: false

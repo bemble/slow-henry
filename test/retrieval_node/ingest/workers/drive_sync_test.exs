@@ -176,6 +176,36 @@ defmodule RetrievalNode.Ingest.Workers.DriveSyncTest do
       assert deleted_keys() == ["drive:deleted", "drive:now-secret"]
     end
 
+    test "shared_with_me adds the docs shared directly with the user", %{source: source} do
+      source
+      |> Source.update_changeset(%{
+        config: %{"my_drive" => true, "shared_with_me" => true, "include" => []}
+      })
+      |> Repo.update!()
+
+      shared = %{"owners" => [%{"me" => false}], "sharedWithMeTime" => "2026-10-01T09:00:00.000Z"}
+
+      stub([
+        {&my_drive?/2, files([doc("mine")])},
+        {fn path, q -> path == "/drive/v3/files" and q["q"] =~ "sharedWithMe = true" end,
+         files([doc("from-a-colleague", shared), classified(doc("their-secret", shared), "conf")])}
+      ])
+
+      assert :ok = perform_job(DriveSync, %{"source_id" => source.id})
+      assert raw_keys() == ["drive:from-a-colleague", "drive:mine"]
+    end
+
+    test "without shared_with_me, shared docs are not listed", %{source: source} do
+      stub([
+        {&my_drive?/2, files([doc("mine")])},
+        {fn path, q -> path == "/drive/v3/files" and q["q"] =~ "sharedWithMe = true" end,
+         fn _ -> flunk("listed shared-with-me docs with the option off") end}
+      ])
+
+      assert :ok = perform_job(DriveSync, %{"source_id" => source.id})
+      assert raw_keys() == ["drive:mine"]
+    end
+
     test "covers included shared drives and folder trees", %{source: source} do
       source
       |> Source.update_changeset(%{config: %{"my_drive" => false, "include" => ["drv", "fold"]}})

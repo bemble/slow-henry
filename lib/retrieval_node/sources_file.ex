@@ -11,6 +11,7 @@ defmodule RetrievalNode.SourcesFile do
 
       [drive]
       my_drive = true                               # Docs you own (default true)
+      shared_with_me = true                         # Docs shared directly with you (default false)
       include = ["0AbC...", "1xYz..."]              # shared drive or folder ids
       # active = false
 
@@ -246,20 +247,23 @@ defmodule RetrievalNode.SourcesFile do
   defp drive_entry(nil), do: {:ok, nil}
 
   defp drive_entry(%{} = item) do
-    my_drive = Map.get(item, "my_drive", true)
-    include = Map.get(item, "include", [])
-    active = Map.get(item, "active", true)
-    unknown = Map.keys(item) -- ~w(my_drive include active)
+    flags = %{
+      my_drive: Map.get(item, "my_drive", true),
+      shared_with_me: Map.get(item, "shared_with_me", false),
+      include: Map.get(item, "include", []),
+      active: Map.get(item, "active", true),
+      unknown: Map.keys(item) -- ~w(my_drive shared_with_me include active)
+    }
 
-    case drive_error(unknown, my_drive, include, active) do
+    case drive_error(flags) do
       nil ->
         {:ok,
          %{
            source_type: :drive_folder,
            identifier: @drive_identifier,
            name: "Google Drive",
-           active: active,
-           config: %{"my_drive" => my_drive, "include" => include}
+           active: flags.active,
+           config: drive_config(flags)
          }}
 
       msg ->
@@ -269,14 +273,21 @@ defmodule RetrievalNode.SourcesFile do
 
   defp drive_entry(_), do: {:error, "`drive` must be a table ([drive])"}
 
-  defp drive_error([_ | _] = unknown, _my_drive, _include, _active),
+  # shared_with_me is only stored when on, so sources configured before the
+  # option existed don't read as changed (which would queue a full pass).
+  defp drive_config(flags) do
+    config = %{"my_drive" => flags.my_drive, "include" => flags.include}
+    if flags.shared_with_me == true, do: Map.put(config, "shared_with_me", true), else: config
+  end
+
+  defp drive_error(%{unknown: [_ | _] = unknown}),
     do: "unknown key(s) #{Enum.join(unknown, ", ")}"
 
-  defp drive_error(_, my_drive, _include, active)
-       when not is_boolean(my_drive) or not is_boolean(active),
-       do: "`my_drive` and `active` must be true or false"
+  defp drive_error(%{my_drive: my, shared_with_me: shared, active: active})
+       when not is_boolean(my) or not is_boolean(shared) or not is_boolean(active),
+       do: "`my_drive`, `shared_with_me` and `active` must be true or false"
 
-  defp drive_error(_, my_drive, include, _active) do
+  defp drive_error(%{include: include} = flags) do
     cond do
       not is_list(include) or not Enum.all?(include, &drive_id?/1) ->
         "`include` must be a list of Drive ids"
@@ -284,8 +295,8 @@ defmodule RetrievalNode.SourcesFile do
       length(Enum.uniq(include)) != length(include) ->
         "duplicate id in `include`"
 
-      not my_drive and include == [] ->
-        "nothing to index (my_drive = false and no include)"
+      not flags.my_drive and not flags.shared_with_me and include == [] ->
+        "nothing to index (my_drive and shared_with_me are false and no include)"
 
       true ->
         nil

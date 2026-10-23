@@ -7,7 +7,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
   What is indexed is decided by `Ingest.DrivePolicy` from the source config
   (written by `RetrievalNode.SourcesFile` from `[drive]` in sources.toml):
 
-      %{"my_drive" => true, "include" => ["<shared drive id or folder id>", ...]}
+      %{"my_drive" => true, "shared_with_me" => true, "include" => ["<drive or folder id>", ...]}
 
   Two modes:
 
@@ -116,7 +116,10 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
 
   defp scope_docs(scope, label_id) do
     listings =
-      [if(scope.my_drive, do: fn -> Drive.my_drive_docs(label_id) end)] ++
+      [
+        if(scope.my_drive, do: fn -> Drive.my_drive_docs(label_id) end),
+        if(scope.shared_with_me, do: fn -> Drive.shared_with_me_docs(label_id) end)
+      ] ++
         Enum.map(scope.drives, fn id -> fn -> Drive.shared_drive_docs(id, label_id) end end) ++
         Enum.map(scope.folders, fn id ->
           fn -> folder_docs([id], label_id, MapSet.new(), []) end
@@ -360,7 +363,12 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
     |> Map.get("include", [])
     |> Enum.reduce_while(
       {:ok,
-       %{my_drive: Map.get(config, "my_drive", true), drives: MapSet.new(), folders: MapSet.new()}},
+       %{
+         my_drive: Map.get(config, "my_drive", true),
+         shared_with_me: Map.get(config, "shared_with_me", false),
+         drives: MapSet.new(),
+         folders: MapSet.new()
+       }},
       fn id, {:ok, scope} ->
         case include_kind(id) do
           {:ok, :drive} -> {:cont, {:ok, %{scope | drives: MapSet.put(scope.drives, id)}}}
