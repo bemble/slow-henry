@@ -327,4 +327,46 @@ defmodule RetrievalNode.Ingest.SourceOwnerTest do
     assert Process.alive?(pid)
     assert length(chunks_for(source, "k.py")) == 1
   end
+
+  describe "embedding backend unavailable" do
+    setup do
+      prev = Application.get_env(:retrieval_node, :embedding_impl)
+
+      Application.put_env(
+        :retrieval_node,
+        :embedding_impl,
+        RetrievalNode.Embedding.UnavailableImpl
+      )
+
+      on_exit(fn -> Application.put_env(:retrieval_node, :embedding_impl, prev) end)
+    end
+
+    test "defers the whole source without spending attempts, never gives up", %{source: source} do
+      a = seed_raw(source, "repo:x:a.py", "a.py", "def a():\n    return 1\n")
+      b = seed_raw(source, "repo:x:b.py", "b.py", "def b():\n    return 2\n")
+
+      for _ <- 1..(SourceOwner.max_file_attempts() + 2) do
+        assert {:ok, _} = SourceOwner.drain(source.id)
+        # Let the deferral lapse so the next drain retries.
+        Repo.update_all(from(p in PendingChunk), set: [retry_after: nil])
+      end
+
+      rows = Repo.all(from p in PendingChunk, where: p.id in ^[a.id, b.id], order_by: p.id)
+      assert length(rows) == 2
+      assert Enum.all?(rows, &(&1.attempts == 0))
+      assert Enum.all?(rows, &is_binary(&1.raw_content))
+      assert hd(rows).last_error =~ "embedding server down"
+    end
+
+    test "the rest of the batch is deferred, not tried", %{source: source} do
+      seed_raw(source, "repo:x:a.py", "a.py", "def a():\n    return 1\n")
+      b = seed_raw(source, "repo:x:b.py", "b.py", "def b():\n    return 2\n")
+
+      assert {:ok, _} = SourceOwner.drain(source.id)
+
+      b = Repo.get!(PendingChunk, b.id)
+      assert b.attempts == 0
+      assert DateTime.compare(b.retry_after, DateTime.utc_now()) == :gt
+    end
+  end
 end

@@ -90,6 +90,20 @@ defmodule RetrievalNode.Embedding.OllamaImplTest do
     assert_raise RuntimeError, ~r/at least 384 dims/, fn -> OllamaImpl.matryoshka([1.0, 2.0]) end
   end
 
+  test "connection errors and 502/503/504 raise Embedding.Unavailable" do
+    Req.Test.stub(__MODULE__, &Req.Test.transport_error(&1, :econnrefused))
+
+    assert_raise RetrievalNode.Embedding.Unavailable, ~r/unreachable/, fn ->
+      OllamaImpl.embed_batch(["a"])
+    end
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      conn |> Plug.Conn.put_status(503) |> Req.Test.json(%{})
+    end)
+
+    assert_raise RetrievalNode.Embedding.Unavailable, ~r/503/, fn -> OllamaImpl.embed("q") end
+  end
+
   test "a server error raises (so the owner retries the file)" do
     Req.Test.stub(__MODULE__, fn conn ->
       conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "model not found"})
