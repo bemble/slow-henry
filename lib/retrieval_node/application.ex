@@ -31,7 +31,10 @@ defmodule RetrievalNode.Application do
           # Ingest.SourceOwner.notify/1 always finds Ingest.SourceSupervisor
           # registered, never races it.
           RetrievalNode.Ingest.Supervisor,
-          {Oban, Application.fetch_env!(:retrieval_node, Oban)},
+          {Oban, Application.fetch_env!(:retrieval_node, Oban)}
+        ] ++
+        sources_watch_children() ++
+        [
           # MCP server (streamable_http) — mounted on the Endpoint at /mcp. Anubis' own
           # `start` gate keys off the Phoenix serve-endpoints flag, which is off under
           # ConnTest, so we drive it from our own config (default on; a future
@@ -59,6 +62,14 @@ defmodule RetrievalNode.Application do
   # never in :test, where RetrievalNode.Embedding.StubImpl stands in.
   defp embedding_children do
     if embedding_serving_start?(), do: [RetrievalNode.Embedding.Supervisor], else: []
+  end
+
+  # Applies sources.toml at boot and on change; needs Repo and Oban (it
+  # enqueues syncs), hence after them.
+  defp sources_watch_children do
+    if Application.get_env(:retrieval_node, :sources_watch, true),
+      do: [RetrievalNode.SourcesFile.Watcher],
+      else: []
   end
 
   defp mcp_server_start?, do: Application.get_env(:retrieval_node, :mcp_server_start, true)

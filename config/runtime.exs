@@ -39,6 +39,11 @@ if config_env() != :test do
   end
 end
 
+# How often the server re-reads sources.toml for changes (seconds).
+if interval = System.get_env("SOURCES_WATCH_INTERVAL") do
+  config :retrieval_node, :sources_watch_interval_ms, String.to_integer(interval) * 1000
+end
+
 if System.get_env("PHX_SERVER") do
   config :retrieval_node, RetrievalNodeWeb.Endpoint, server: true
 end

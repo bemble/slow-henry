@@ -3,6 +3,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
   use RetrievalNodeWeb, :live_view
 
   alias RetrievalNode.Inventory
+  alias RetrievalNode.SourcesFile.Watcher
   alias RetrievalNodeWeb.{Format, SourceLive}
 
   @refresh_ms 5_000
@@ -45,6 +46,7 @@ defmodule RetrievalNodeWeb.SourcesLive do
       jobs: jobs,
       source_names: names,
       storage: Inventory.storage(),
+      sources_file: Watcher.status(),
       totals: %{
         sources: length(rows),
         chunks: Enum.sum_by(rows, & &1.chunks),
@@ -69,6 +71,8 @@ defmodule RetrievalNodeWeb.SourcesLive do
         <.stat title="Sources indexing" value={@totals.indexing} />
         <.stat title="Database" value={Format.bytes(@storage.total)} />
       </div>
+
+      <.sources_file status={@sources_file} />
 
       <section>
         <h2 class="mb-2 text-lg font-semibold">Sources</h2>
@@ -204,6 +208,28 @@ defmodule RetrievalNodeWeb.SourcesLive do
         </div>
       </section>
     </Layouts.app>
+    """
+  end
+
+  attr :status, :any, required: true
+
+  # sources.toml auto-apply (SourcesFile.Watcher); nothing when it's off.
+  defp sources_file(%{status: nil} = assigns), do: ~H""
+
+  defp sources_file(assigns) do
+    ~H"""
+    <div id="sources-file" class="text-sm">
+      <div :if={@status.error} role="alert" class="alert alert-error text-sm">
+        <.icon name="hero-exclamation-triangle" class="size-5" />
+        <span>
+          <code>{@status.path}</code> not applied, sources left unchanged: {@status.error}
+        </span>
+      </div>
+      <p :if={!@status.error && @status.applied_at} class="opacity-70">
+        <code>{@status.path}</code> applied {Format.ago(@status.applied_at)}
+        · {@status.changes} source(s) changed · re-checked automatically
+      </p>
+    </div>
     """
   end
 
