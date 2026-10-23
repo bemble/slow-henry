@@ -19,7 +19,8 @@ defmodule RetrievalNodeWeb.Format do
   def bytes(nil), do: "0 B"
   def bytes(n) when n < 1024, do: "#{n} B"
   def bytes(n) when n < 1024 * 1024, do: "#{Float.round(n / 1024, 1)} KB"
-  def bytes(n), do: "#{Float.round(n / (1024 * 1024), 1)} MB"
+  def bytes(n) when n < 1024 * 1024 * 1024, do: "#{Float.round(n / (1024 * 1024), 1)} MB"
+  def bytes(n), do: "#{Float.round(n / (1024 * 1024 * 1024), 2)} GB"
 
   @doc "Short label for a source type."
   def source_type(:git_repo), do: "git"
