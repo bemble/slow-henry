@@ -42,7 +42,7 @@ defmodule RetrievalNodeWeb.Layouts do
     <header class="navbar border-b border-base-300 px-4 sm:px-6 lg:px-8">
       <div class="flex-1">
         <.link navigate={~p"/"} class="flex w-fit items-center gap-2 font-semibold">
-          <.icon name="hero-circle-stack" class="size-5" /> Slow Henry
+          <img src={~p"/images/icon.png"} alt="" class="size-8" /> Slow Henry
         </.link>
       </div>
       <div class="flex-none">
