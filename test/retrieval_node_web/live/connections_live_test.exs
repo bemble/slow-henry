@@ -107,6 +107,21 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     assert RetrievalNode.Secrets.get("google_refresh_token") == nil
   end
 
+  test "shows the app version and how to add the MCP server", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/connections?from=somewhere")
+    version = to_string(Application.spec(:retrieval_node, :vsn))
+
+    assert has_element?(view, "#app-version", "Slow Henry v#{version}")
+    # Built from the URL the page was opened with, without its query.
+    assert has_element?(view, "#mcp-url", "http://www.example.com/mcp")
+
+    assert has_element?(
+             view,
+             "#mcp pre",
+             "claude mcp add --transport http slow-henry http://www.example.com/mcp"
+           )
+  end
+
   test "pasting the redirected URL finishes the same way", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/connections")
     state = state_from(view)

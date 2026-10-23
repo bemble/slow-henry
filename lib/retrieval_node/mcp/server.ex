@@ -11,7 +11,7 @@ defmodule RetrievalNode.MCP.Server do
   """
   use Anubis.Server,
     name: "retrieval-node",
-    version: "0.1.0",
+    version: Mix.Project.config()[:version],
     capabilities: [:tools]
 
   component(RetrievalNode.MCP.Tools.SemanticSearch)

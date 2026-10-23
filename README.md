@@ -40,9 +40,10 @@ exposed to clients as **MCP tools** over HTTP.
     index (writes `sources.toml`);
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
-  - `/connections` — embedding backend status (Ollama reachability, model,
-    share of the index on the current embedding setup) and Google Drive
-    authorization.
+  - `/connections` — the app version, how to add the MCP server to a client
+    (Claude Code, `.mcp.json`, VS Code…), embedding backend status (Ollama
+    reachability, model, share of the index on the current embedding setup),
+    and GitHub / Google Drive authorization.
 
 ## Stack
 
