@@ -51,3 +51,7 @@ retrieval_node-*.tar
 # The app's data dir (DATA_DIR): sources.toml (private repo names, Drive
 # ids; template: sources.example.toml) and secrets.toml (OAuth tokens).
 /data/
+
+# tree-sitter grammar cache staged into the release by scripts/build_arm64.sh
+# and the Dockerfile.
+/rel/overlays/grammar-cache/

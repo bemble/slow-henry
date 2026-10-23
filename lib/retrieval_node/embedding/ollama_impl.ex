@@ -126,7 +126,6 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
   defp describe({:ok, %{status: status}}), do: "HTTP #{status}"
   defp describe({:error, %{reason: reason}}), do: inspect(reason)
   defp describe({:error, reason}), do: inspect(reason)
-  defp describe(other), do: inspect(other, limit: 3)
 
   defp req_options, do: Application.get_env(:retrieval_node, :embedding_req_options, [])
 

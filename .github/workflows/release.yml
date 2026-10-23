@@ -1,0 +1,38 @@
+name: Release
+
+# release-please keeps a "chore(main): release X.Y.Z" PR open that bumps the
+# version in mix.exs and CHANGELOG.md from the conventional commits merged
+# since the last release. Merging that PR tags vX.Y.Z and creates the GitHub
+# Release. Every push to main then builds the Docker image: `edge` always, and
+# the version tags when a release was just cut.
+#
+# The image build is called from here rather than triggered by the tag: tags
+# and releases created with GITHUB_TOKEN don't start other workflows.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  docker:
+    needs: release-please
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.release-please.outputs.release_created && needs.release-please.outputs.version || '' }}

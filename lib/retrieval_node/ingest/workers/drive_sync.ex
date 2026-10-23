@@ -122,7 +122,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
       ] ++
         Enum.map(scope.drives, fn id -> fn -> Drive.shared_drive_docs(id, label_id) end end) ++
         Enum.map(scope.folders, fn id ->
-          fn -> folder_docs([id], label_id, MapSet.new(), []) end
+          fn -> folder_docs([id], label_id, %{}, []) end
         end)
 
     listings
@@ -136,10 +136,12 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
   end
 
   # Breadth-first walk of a folder tree; `seen` guards against shortcut loops.
+  # `seen` is a plain map (id => true): a MapSet seeded with MapSet.new() trips
+  # Dialyzer's opaque-type checks on OTP 29.
   defp folder_docs([], _label_id, _seen, acc), do: {:ok, acc}
 
   defp folder_docs([id | rest], label_id, seen, acc) do
-    if MapSet.member?(seen, id) do
+    if Map.has_key?(seen, id) do
       folder_docs(rest, label_id, seen, acc)
     else
       with {:ok, children} <- Drive.folder_children(id, label_id) do
@@ -148,7 +150,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
         folder_docs(
           rest ++ Enum.map(folders, & &1["id"]),
           label_id,
-          MapSet.put(seen, id),
+          Map.put(seen, id, true),
           acc ++ docs
         )
       end

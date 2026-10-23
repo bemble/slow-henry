@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "elixir",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bootstrap-sha": "7c522d25c44256506692c707bebaf3e80120dcbb",
+  "packages": {
+    ".": {
+      "package-name": "slow-henry",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

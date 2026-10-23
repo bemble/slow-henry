@@ -47,7 +47,10 @@ exposed to clients as **MCP tools** over HTTP.
 Elixir/Phoenix + LiveView · Postgres + pgvector · Oban · Bumblebee/Nx/EXLA ·
 tree-sitter (code chunking) · Anubis MCP · Tailwind/daisyUI.
 
-Production is self-hosted ARM (glibc); development runs in the devcontainer.
+Production is self-hosted ARM (glibc), either as a release tarball
+(`deploy/README.md`) or as the Docker image (see
+[Running with Docker](#running-with-docker)); development runs in the
+devcontainer.
 
 ## Development
 
@@ -90,9 +93,62 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
 | `PORT` | HTTP port (default 4000). |
+| `SECRET_KEY_BASE` | Prod only, required: signs cookies (`mix phx.gen.secret`). |
+| `PHX_HOST` | Prod: the host name in generated URLs (default `example.com`; `localhost` in `docker-compose.yml`). |
 
 `mix test` always uses the local Postgres on `localhost`, whatever `PGHOST`
 says, so a `.env` pointing at a real database can't be wiped by the suite.
+
+## Running with Docker
+
+The image `ghcr.io/bemble/slow-henry` is published for `linux/amd64` and
+`linux/arm64`. `docker-compose.yml` runs it next to Postgres 18 + pgvector
+(`pgvector/pgvector:pg18`):
+
+```sh
+cp .env.example .env                    # then fill it in, see below
+cp sources.example.toml sources.toml    # the sources to index
+docker compose up -d
+```
+
+In `.env`, set at least `SECRET_KEY_BASE` (`openssl rand -base64 48`, or
+`mix phx.gen.secret`). The `PG*` values are used both to create the database
+and to connect to it, and `PGHOST` is always `db` inside compose. Everything
+else in [Configuration](#configuration) applies as is.
+
+- The UI and `/mcp` are on port 4000 (`PORT` in `.env` changes the host port).
+  Pending migrations run at each start; set `RUN_MIGRATIONS=false` to skip them.
+- `sources.toml` is mounted read-only from the host. Edits are applied without
+  a restart (see [Sources](#sources)).
+- The `app-data` volume holds `secrets.toml` (OAuth tokens from
+  `/connections`), the git mirrors, and the embedding model (~1 GB). The model
+  is downloaded at first boot, so the container reports healthy (`/healthz`)
+  only after a few minutes. With `OLLAMA_ENDPOINT` set, nothing is downloaded.
+  The compose file has a commented-out `ollama` service.
+- The `db-data` volume holds the database.
+
+**Versions.** `latest` is the latest release. Pin `SLOW_HENRY_VERSION` in
+`.env` instead (`0.2.0`, or `0.2` to follow patch releases), then upgrade with
+`docker compose pull && docker compose up -d`. `edge` follows `main`, and every
+build is also tagged `sha-<commit>`.
+
+To build the image yourself: `docker build -t slow-henry .`
+
+### Releases
+
+Versions follow [semver](https://semver.org/) and are managed by
+[release-please](https://github.com/googleapis/release-please) from
+[Conventional Commits](https://www.conventionalcommits.org/) (`fix:` → patch,
+`feat:` → minor, `feat!:` or `BREAKING CHANGE:` → minor until 1.0). On each
+push to `main` (`.github/workflows/release.yml`):
+
+1. release-please opens or updates a release PR that bumps `version` in
+   `mix.exs` and adds the changes to `CHANGELOG.md`;
+2. merging that PR tags `vX.Y.Z` and creates the GitHub Release;
+3. the image is built on native amd64 and arm64 runners and pushed as `edge`,
+   plus `X.Y.Z`, `X.Y`, `X` and `latest` for a release
+   (`.github/workflows/docker.yml`, which also test-builds pull requests that
+   touch the image).
 
 ## Embeddings
 
