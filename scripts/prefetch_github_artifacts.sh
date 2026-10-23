@@ -37,8 +37,6 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   echo "XLA_CACHE_DIR=$XLA_CACHE_DIR" >>"$GITHUB_ENV"
 fi
 
-build_dir="_build/${MIX_ENV:-dev}"
-
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 tailwind_target=linux-x64 ;;
   aarch64 | arm64) arch=aarch64 tailwind_target=linux-arm64 ;;
@@ -74,11 +72,6 @@ runtime_nif="$(erl -noshell -eval 'io:put_chars(erlang:system_info(nif_version))
 for checksum in deps/*/checksum-*.exs; do
   [ -e "$checksum" ] || continue
   dep="$(basename "$(dirname "$checksum")")"
-  if compgen -G "$build_dir/lib/$dep/priv/native/*.so" >/dev/null; then
-    log "$dep already compiled, skipping its NIF"
-    continue
-  fi
-
   vsn="$(locked_version "$dep")"
   crate="$(grep -rhoE 'crate: *"[^"]+"' "deps/$dep/lib" | head -1 | grep -oE '"[^"]+"' | tr -d '"')"
   repo="$(grep -oE '<<"GitHub">>,<<"https://github.com/[^"]+">>' "deps/$dep/hex_metadata.config" |
@@ -101,16 +94,14 @@ for checksum in deps/*/checksum-*.exs; do
 done
 
 # --- XLA archive (used to build EXLA's NIF) -----------------------------------
-if compgen -G "$build_dir/lib/exla/priv/*.so" >/dev/null; then
-  log "exla already compiled, skipping the XLA archive"
-else
-  vsn="$(locked_version xla)"
-  file="xla_extension-$vsn-$arch-linux-gnu-cpu.tar.gz"
-  sha="$(awk -v f="$file" '$2 == f { print $1 }' deps/xla/checksum.txt)"
-  [ -n "$sha" ] || die "no checksum for $file in deps/xla/checksum.txt"
-  fetch "https://github.com/elixir-nx/xla/releases/download/v$vsn/$file" \
-    "$XLA_CACHE_DIR/$vsn/download/$file" "$sha"
-fi
+# Fetched even when _build has EXLA compiled: a _build restored from another OTP
+# version is recompiled, which needs the archive again.
+vsn="$(locked_version xla)"
+file="xla_extension-$vsn-$arch-linux-gnu-cpu.tar.gz"
+sha="$(awk -v f="$file" '$2 == f { print $1 }' deps/xla/checksum.txt)"
+[ -n "$sha" ] || die "no checksum for $file in deps/xla/checksum.txt"
+fetch "https://github.com/elixir-nx/xla/releases/download/v$vsn/$file" \
+  "$XLA_CACHE_DIR/$vsn/download/$file" "$sha"
 
 # --- Tailwind binary (mix assets.setup installs it --if-missing) --------------
 if $with_tailwind; then
