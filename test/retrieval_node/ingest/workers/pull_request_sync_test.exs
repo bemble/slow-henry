@@ -65,6 +65,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
 
       Req.Test.json(conn, %{
         "data" => %{
+          "repository" => %{"id" => "R_1"},
           "search" => %{
             "nodes" => nodes,
             "pageInfo" => %{"hasNextPage" => next != nil, "endCursor" => next}
@@ -197,6 +198,19 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
     Req.Test.stub(__MODULE__, &Plug.Conn.send_resp(&1, 401, ~s({"message":"Bad credentials"})))
 
     assert {:error, :github_unauthorized} =
+             perform_job(PullRequestSync, %{"source_id" => source.id})
+  end
+
+  test "a repo the token can't see fails the job instead of finding nothing",
+       %{source: source} do
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{
+        "data" => %{"repository" => nil, "search" => %{"nodes" => []}},
+        "errors" => [%{"type" => "NOT_FOUND", "message" => "Could not resolve to a Repository"}]
+      })
+    end)
+
+    assert {:error, {:github_repo_not_visible, "acme/app"}} =
              perform_job(PullRequestSync, %{"source_id" => source.id})
   end
 end

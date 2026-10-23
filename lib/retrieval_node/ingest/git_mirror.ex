@@ -90,13 +90,37 @@ defmodule RetrievalNode.Ingest.GitMirror do
     # use the longer network_timeout rather than the short MCP-facing default.
     env = github_auth_env(url)
 
-    if File.dir?(path) do
-      git({["--git-dir", path, "fetch", "--prune", "origin"], env}, [0], network_timeout())
+    result =
+      if File.dir?(path) do
+        git({["--git-dir", path, "fetch", "--prune", "origin"], env}, [0], network_timeout())
+      else
+        File.mkdir_p!(mirror_root())
+        git({["clone", "--mirror", "--end-of-options", url, path], env}, [0], network_timeout())
+      end
+
+    if env == [], do: result, else: explain_token_refusal(result)
+  end
+
+  # GitHub answers a token without access with a misleading "Write access to
+  # repository not granted" 403 (or a 401 that makes git prompt for a user).
+  # Drop the cached token — it may have been revoked by a refresh elsewhere —
+  # so the job's retry gets a fresh one, and say what to check.
+  @token_refused ~r/returned error: 40[13]|not granted|could not read Username|Authentication failed/
+
+  defp explain_token_refusal({:error, {:git, code, msg}} = error) do
+    if Regex.match?(@token_refused, msg) do
+      OAuth.invalidate()
+
+      {:error,
+       {:git, code,
+        "GitHub refused the App token: is the GitHub App installed on this repo, " <>
+          "with Contents read access? (git: #{msg})"}}
     else
-      File.mkdir_p!(mirror_root())
-      git({["clone", "--mirror", "--end-of-options", url, path], env}, [0], network_timeout())
+      error
     end
   end
+
+  defp explain_token_refusal(result), do: result
 
   # With a GitHub App token (GitHub.OAuth), github.com is reached with it, as
   # an http.extraHeader passed through git's GIT_CONFIG_* environment — never
