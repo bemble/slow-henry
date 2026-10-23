@@ -21,8 +21,9 @@ exposed to clients as **MCP tools** over HTTP.
   `pending_chunks` and advance a watermark; one `SourceOwner` process per source
   chunks, embeds and upserts it. Re-runs are no-ops. Lockfiles, minified
   bundles, source maps, snapshots, SVGs and text files over 256 KB are skipped.
-- **Local embeddings:** `nomic-embed-text-v1.5` via Bumblebee/Nx.Serving, with
-  Matryoshka truncation to 384 dimensions.
+- **Local embeddings:** `nomic-embed-text-v1.5`, Matryoshka-truncated to 384
+  dimensions — in-process via Bumblebee/Nx.Serving (CPU), or on an Ollama
+  server (e.g. a Mac's GPU, see [Embeddings](#embeddings)).
 - **Secrets-aware:** git and Drive content goes through gitleaks (regex
   fallback), Jira through the regex scanner; secrets are redacted in place
   before anything is embedded, and an append-only audit log records what was
@@ -70,6 +71,8 @@ its values win over the shell environment.
 |---|---|
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Database, in dev and prod (defaults: the devcontainer's local Postgres). |
 | `DATABASE_URL` | Prod only: takes precedence over the `PG*` variables. |
+| `OLLAMA_ENDPOINT` | Ollama server for embeddings, e.g. `http://localhost:11434` (see [Embeddings](#embeddings)). Unset: in-process CPU model. |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Google Drive access, obtained from the `/google` page. |
 | `SOURCES_FILE` | Path of the sources file (default `sources.toml`). |
@@ -79,6 +82,34 @@ its values win over the shell environment.
 
 `mix test` always uses the local Postgres on `localhost`, whatever `PGHOST`
 says, so a `.env` pointing at a real database can't be wiped by the suite.
+
+## Embeddings
+
+By default chunks are embedded in-process on the CPU (Bumblebee + EXLA, about
+3 chunks/s on 14 arm64 cores). For anything beyond a few repos, run
+[Ollama](https://ollama.com) where there is a GPU — on an Apple Silicon Mac it
+uses Metal, about 18x faster (about 50 chunks/s on a Mac Studio):
+
+```sh
+ollama pull nomic-embed-text           # the same model: nomic-embed-text v1.5
+```
+
+then set `OLLAMA_ENDPOINT` (e.g. `http://localhost:11434`; from a devcontainer
+on the same Mac, `localhost` or `host.docker.internal`; for another machine,
+start Ollama with `OLLAMA_HOST=0.0.0.0` — it has no authentication, keep it on
+the LAN). The in-process model is then not loaded at all.
+
+Through Ollama, chunks are embedded with nomic's `search_document: ` prefix and
+queries with `search_query: `, as the model was trained.
+
+**Switching setups.** Vectors from different backends, models or prefixes
+don't mix well in one index, so after switching re-embed what is stored:
+
+```sh
+mix rn.reembed     # stop the server first; --source NAME, --after ID to resume
+```
+
+It re-embeds the stored chunk text without re-chunking.
 
 ## Sources
 

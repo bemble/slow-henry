@@ -8,8 +8,11 @@ defmodule RetrievalNode.Embedding do
 
     * `RetrievalNode.Embedding.NxServingImpl` — the v1 default: in-process
       Bumblebee/Nx.Serving over nomic-embed-text-v1.5, Matryoshka-truncated to 384.
-    * `RetrievalNode.Embedding.LlamaCppSidecarImpl` — a stub escape hatch (HTTP to
-      a `llama.cpp --embedding` server) if Bumblebee/EXLA proves unworkable on arm64.
+    * `RetrievalNode.Embedding.OllamaImpl` — HTTP to Ollama (e.g. on an Apple
+      GPU), selected by `OLLAMA_ENDPOINT` (config/runtime.exs).
+
+  `embed/1` embeds a search query, `embed_batch/1` indexed chunks: impls that
+  use task prefixes (search_query / search_document) rely on that split.
 
   Vectors are bare `[float()]` (length `dimensions/0`), consumed directly by
   `Pgvector.new/1` in the search/ingest paths.

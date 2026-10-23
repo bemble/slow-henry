@@ -25,6 +25,20 @@ if config_env() != :test do
     refresh_token: System.get_env("GOOGLE_REFRESH_TOKEN")
 end
 
+# Embeddings from Ollama (e.g. on the Mac's GPU) when OLLAMA_ENDPOINT is set;
+# the in-process Bumblebee serving (~1 GB, CPU) is then not started at all.
+if config_env() != :test do
+  if endpoint = System.get_env("OLLAMA_ENDPOINT") do
+    config :retrieval_node,
+      embedding_impl: RetrievalNode.Embedding.OllamaImpl,
+      embedding_serving_start: false
+
+    config :retrieval_node, RetrievalNode.Embedding.OllamaImpl,
+      endpoint: endpoint,
+      model: System.get_env("OLLAMA_EMBEDDING_MODEL") || "nomic-embed-text"
+  end
+end
+
 if System.get_env("PHX_SERVER") do
   config :retrieval_node, RetrievalNodeWeb.Endpoint, server: true
 end
