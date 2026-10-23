@@ -82,6 +82,8 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/connections` page. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for merged PRs and private clones (see below). |
+| `GITHUB_TOKEN` | Optional: a token (e.g. a fine-grained PAT) that overrides the one stored by `/connections`. |
 | `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
 | `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
@@ -171,8 +173,8 @@ directory), and the last matching pattern wins. For example
 only the `cloud` integration. Changing `exclude` triggers a full pass that
 indexes newly included files and removes newly excluded ones.
 
-`pull_requests = true` indexes the repo's **merged** pull requests through the
-`gh` CLI (`gh auth login` for the user running the server): one document per
+`pull_requests = true` indexes the repo's **merged** pull requests through
+GitHub's GraphQL API, with the GitHub App token (see below): one document per
 PR, under the virtual path `pulls/<number>`, with its title, author, merge
 date, URL, description, and the human comments and reviews (bots left out).
 They are synced hourly, picking up PRs edited or commented after merge.
@@ -205,6 +207,33 @@ One-time setup:
 
 When the server runs on another machine than the browser, Google's redirect to
 `localhost` fails to load: paste that page's URL into the form on `/connections`.
+
+### GitHub
+
+Merged pull requests, and clones of private `https://github.com/` repos, use
+the token of a **GitHub App**, obtained through the device flow — no `gh` CLI,
+no redirect, so it works on a headless server. The token can only do what the
+App's permissions allow, on the repos where the App is installed and you have
+access.
+
+One-time setup:
+
+1. GitHub → Settings → Developer settings → **GitHub Apps** → New GitHub App.
+   Any homepage URL; **uncheck Webhook**; check **Enable Device Flow**.
+2. Repository permissions, all **read-only**: Contents, Pull requests (Metadata
+   is added automatically). Nothing else.
+3. Create it, note the **Client ID**, generate a **client secret**, and set
+   `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. If the App must be installed on
+   an organization you don't own, make it installable by **Any account**.
+4. Install the App on the organization(s) or account holding the repos, for
+   all repos or a selection.
+5. Open `/connections` and click **Connect GitHub**: enter the code shown at
+   github.com/login/device. The refresh token goes to `DATA_DIR/secrets.toml`;
+   GitHub rotates it at each refresh (access tokens last 8 hours, refresh
+   tokens 6 months when unused). **Disconnect** forgets it.
+
+`GITHUB_TOKEN`, if set, is used instead and never refreshed. Without any token,
+PR syncs are cancelled and git falls back to its own credential helper.
 
 ## Project plan
 

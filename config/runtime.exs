@@ -40,6 +40,16 @@ if config_env() != :test do
   end
 end
 
+# GitHub App for merged PRs and private clones (RetrievalNode.GitHub.OAuth):
+# connected from the Connections page, its refresh token stored by
+# RetrievalNode.Secrets. GITHUB_TOKEN (e.g. a fine-grained PAT) overrides it.
+if config_env() != :test do
+  config :retrieval_node, :github,
+    client_id: System.get_env("GITHUB_CLIENT_ID"),
+    client_secret: System.get_env("GITHUB_CLIENT_SECRET"),
+    token: System.get_env("GITHUB_TOKEN")
+end
+
 # Where the app keeps what it writes itself (secrets.toml, …): DATA_DIR,
 # else ./data in dev and /var/lib/retrieval_node in a release.
 cond do

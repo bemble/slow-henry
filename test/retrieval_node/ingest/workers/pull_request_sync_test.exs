@@ -10,8 +10,20 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
   alias RetrievalNode.Retrieval.{PendingChunk, Source, SyncState}
 
   setup do
-    prev = Application.get_env(:retrieval_node, :github_runner)
-    on_exit(fn -> Application.put_env(:retrieval_node, :github_runner, prev) end)
+    prev = {
+      Application.get_env(:retrieval_node, :github),
+      Application.get_env(:retrieval_node, :github_req_options)
+    }
+
+    # A static token (as GITHUB_TOKEN would give): no OAuth refresh.
+    Application.put_env(:retrieval_node, :github, token: "test-token")
+    Application.put_env(:retrieval_node, :github_req_options, plug: {Req.Test, __MODULE__})
+
+    on_exit(fn ->
+      {github, req} = prev
+      Application.put_env(:retrieval_node, :github, github)
+      Application.put_env(:retrieval_node, :github_req_options, req)
+    end)
 
     source =
       Repo.insert!(%Source{
@@ -45,19 +57,20 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
   defp runner(pages) do
     parent = self()
 
-    Application.put_env(:retrieval_node, :github_runner, fn _query, vars ->
+    Req.Test.stub(__MODULE__, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      vars = Jason.decode!(body)["variables"]
       send(parent, {:search, vars})
       {nodes, next} = Map.fetch!(pages, vars["after"])
 
-      {:ok,
-       %{
-         "data" => %{
-           "search" => %{
-             "nodes" => nodes,
-             "pageInfo" => %{"hasNextPage" => next != nil, "endCursor" => next}
-           }
-         }
-       }}
+      Req.Test.json(conn, %{
+        "data" => %{
+          "search" => %{
+            "nodes" => nodes,
+            "pageInfo" => %{"hasNextPage" => next != nil, "endCursor" => next}
+          }
+        }
+      })
     end)
   end
 
@@ -165,11 +178,25 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
   end
 
   test "GitHub errors fail the job (so Oban retries)", %{source: source} do
-    Application.put_env(:retrieval_node, :github_runner, fn _q, _v ->
-      {:ok, %{"errors" => [%{"message" => "API rate limit exceeded"}]}}
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{"errors" => [%{"message" => "API rate limit exceeded"}]})
     end)
 
     assert {:error, {:github, ["API rate limit exceeded"]}} =
+             perform_job(PullRequestSync, %{"source_id" => source.id})
+  end
+
+  test "without a GitHub token the job is cancelled", %{source: source} do
+    Application.put_env(:retrieval_node, :github, [])
+
+    assert {:cancel, :github_not_authorized} =
+             perform_job(PullRequestSync, %{"source_id" => source.id})
+  end
+
+  test "a 401 fails the job", %{source: source} do
+    Req.Test.stub(__MODULE__, &Plug.Conn.send_resp(&1, 401, ~s({"message":"Bad credentials"})))
+
+    assert {:error, :github_unauthorized} =
              perform_job(PullRequestSync, %{"source_id" => source.id})
   end
 end
