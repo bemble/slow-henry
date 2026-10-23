@@ -2,7 +2,7 @@ defmodule RetrievalNode.Google.OAuth do
   @moduledoc """
   OAuth 2.0 for a Google "Desktop app" client, read-only Drive + Drive Labels.
 
-  One-time consent, from the UI's Google page (`RetrievalNodeWeb.GoogleLive`),
+  One-time consent, from the UI's Connections page (`RetrievalNodeWeb.ConnectionsLive`),
   yields a **refresh token**; from then on `access_token/0` trades it for
   short-lived access tokens, cached in `:persistent_term` until a minute
   before expiry. Desktop clients accept any loopback redirect, so the redirect

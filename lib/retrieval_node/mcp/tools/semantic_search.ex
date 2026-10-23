@@ -27,8 +27,10 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
           [source_type: source_type, repo: Map.get(params, :repo), lang: Map.get(params, :lang)]
           |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-        results = query |> Search.hybrid_search(opts) |> Enum.map(&result/1)
-        {:reply, Response.json(Response.tool(), %{results: results}), frame}
+        # mode is "text_only" when the embedding backend is down (BM25 only).
+        %{mode: mode, hits: hits} = Search.search(query, opts)
+        results = Enum.map(hits, &result/1)
+        {:reply, Response.json(Response.tool(), %{mode: mode, results: results}), frame}
 
       {:error, msg} ->
         {:reply, Response.error(Response.tool(), msg), frame}

@@ -17,12 +17,26 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 # Google OAuth for the Drive source (see RetrievalNode.Google.OAuth and
-# the UI's Google page at /google). Read in every env but test, which stubs it.
+# the UI's Connections page at /connections). Read in every env but test, which stubs it.
 if config_env() != :test do
   config :retrieval_node, :google,
     client_id: System.get_env("GOOGLE_CLIENT_ID"),
     client_secret: System.get_env("GOOGLE_CLIENT_SECRET"),
     refresh_token: System.get_env("GOOGLE_REFRESH_TOKEN")
+end
+
+# Embeddings from Ollama (e.g. on the Mac's GPU) when OLLAMA_ENDPOINT is set;
+# the in-process Bumblebee serving (~1 GB, CPU) is then not started at all.
+if config_env() != :test do
+  if endpoint = System.get_env("OLLAMA_ENDPOINT") do
+    config :retrieval_node,
+      embedding_impl: RetrievalNode.Embedding.OllamaImpl,
+      embedding_serving_start: false
+
+    config :retrieval_node, RetrievalNode.Embedding.OllamaImpl,
+      endpoint: endpoint,
+      model: System.get_env("OLLAMA_EMBEDDING_MODEL") || "nomic-embed-text"
+  end
 end
 
 if System.get_env("PHX_SERVER") do

@@ -271,6 +271,35 @@ defmodule RetrievalNode.Ingest.PendingChunks do
   end
 
   @doc """
+  The embedding backend was unavailable while applying `row`: that says
+  nothing about the file, so give its attempt back, and defer every staged
+  row of the source by `seconds`, so the owner idles instead of hammering a
+  server that is down. Nothing is ever given up because of an outage.
+  """
+  def defer_unavailable(%PendingChunk{} = row, reason, seconds) do
+    now = DateTime.utc_now()
+    retry_after = DateTime.add(now, seconds, :second)
+    message = reason |> inspect() |> truncate_utf8(@max_error_bytes)
+
+    Repo.transaction(fn ->
+      Repo.update_all(by_ids([row.id]),
+        inc: [attempts: -1],
+        set: [last_error: message, updated_at: now]
+      )
+
+      Repo.update_all(
+        from(p in PendingChunk,
+          where: p.source_id == ^row.source_id,
+          where: is_nil(p.retry_after) or p.retry_after < ^retry_after
+        ),
+        set: [retry_after: retry_after, updated_at: now]
+      )
+    end)
+
+    :ok
+  end
+
+  @doc """
   Increments `attempts` on one staging row. Called BEFORE `FileIngest.apply/2`
   runs against it (see `Ingest.SourceOwner`'s "one pass" step) so a crash
   mid-apply still counts against the max-attempts ceiling — an `apply/2` that

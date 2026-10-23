@@ -9,6 +9,7 @@ defmodule RetrievalNode.Search do
   """
 
   alias RetrievalNode.Embedding
+  alias RetrievalNode.Embedding.Unavailable
   alias RetrievalNode.Search.HybridQuery
 
   @type hit :: %{chunk: map(), score: float()}
@@ -29,9 +30,32 @@ defmodule RetrievalNode.Search do
   `metadata`) — never `content`.
   """
   @spec hybrid_search(String.t(), keyword()) :: [hit]
-  def hybrid_search(query_text, opts \\ []) when is_binary(query_text) do
-    embedding = Keyword.get_lazy(opts, :embedding, fn -> Embedding.embed(query_text) end)
+  def hybrid_search(query_text, opts \\ []) when is_binary(query_text),
+    do: search(query_text, opts).hits
 
+  @doc """
+  Like `hybrid_search/2`, but says how it ranked: `:hybrid`, or `:text_only`
+  when the embedding backend is unavailable (`Embedding.Unavailable`) — the
+  search then falls back to full-text ranking alone instead of failing.
+  """
+  @spec search(String.t(), keyword()) :: %{mode: :hybrid | :text_only, hits: [hit]}
+  def search(query_text, opts \\ []) when is_binary(query_text) do
+    {mode, embedding} =
+      case Keyword.fetch(opts, :embedding) do
+        {:ok, embedding} -> {:hybrid, embedding}
+        :error -> embed_query(query_text)
+      end
+
+    %{mode: mode, hits: run(query_text, embedding, opts)}
+  end
+
+  defp embed_query(query_text) do
+    {:hybrid, Embedding.embed(query_text)}
+  rescue
+    Unavailable -> {:text_only, nil}
+  end
+
+  defp run(query_text, embedding, opts) do
     query_opts =
       opts
       |> Keyword.take([:source_id, :source_type, :repo, :lang, :top_k])

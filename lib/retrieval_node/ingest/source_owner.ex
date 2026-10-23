@@ -43,9 +43,11 @@ defmodule RetrievalNode.Ingest.SourceOwner do
 
   require Logger
 
+  alias RetrievalNode.Embedding.Unavailable
   alias RetrievalNode.Ingest.{FileIngest, PendingChunks}
 
   @max_file_attempts 5
+  @unavailable_retry_s 60
   @rows_per_pass 50
   @idle_ms 60_000
 
@@ -283,9 +285,14 @@ defmodule RetrievalNode.Ingest.SourceOwner do
     rows = PendingChunks.drainable(source_id, limit: @rows_per_pass)
     full_batch? = length(rows) == @rows_per_pass
 
+    # An unavailable embedding backend halts the pass: the rows left are
+    # deferred with the whole source (see PendingChunks.defer_unavailable/3).
     stats =
-      Enum.reduce(rows, %{empty_stats() | superseded: superseded}, fn row, stats ->
-        apply_row(source_id, row, stats)
+      Enum.reduce_while(rows, %{empty_stats() | superseded: superseded}, fn row, stats ->
+        case apply_row(source_id, row, stats) do
+          {:unavailable, stats} -> {:halt, stats}
+          stats -> {:cont, stats}
+        end
       end)
 
     # A pass that touched no rows (a `notify/1` on a source with nothing new —
@@ -316,6 +323,7 @@ defmodule RetrievalNode.Ingest.SourceOwner do
       try do
         FileIngest.apply(row, force: force?, on_parse_crash: on_parse_crash)
       rescue
+        error in Unavailable -> {:unavailable, error}
         error -> {:error, {error, __STACKTRACE__}}
       catch
         # Both non-exception non-local exits reach the normal failure path, so a
@@ -326,6 +334,15 @@ defmodule RetrievalNode.Ingest.SourceOwner do
       end
 
     case result do
+      {:unavailable, error} ->
+        Logger.warning(
+          "Ingest.SourceOwner: embeddings unavailable, deferring source_id=#{source_id} " <>
+            "for #{@unavailable_retry_s}s: #{Exception.message(error)}"
+        )
+
+        PendingChunks.defer_unavailable(row, Exception.message(error), @unavailable_retry_s)
+        {:unavailable, %{stats | failed: stats.failed + 1}}
+
       {:ok, summary} ->
         # `embedded`/`reused` only exist on an :indexed summary; deletions and
         # unindexable files embed nothing.

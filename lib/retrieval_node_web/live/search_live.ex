@@ -34,7 +34,7 @@ defmodule RetrievalNodeWeb.SearchLive do
     {:noreply,
      socket
      |> assign(form: to_form(%{"q" => q, "source" => source_id, "top_k" => top_k}))
-     |> assign(:results, search(q, source_id, String.to_integer(top_k)))}
+     |> assign(search(q, source_id, String.to_integer(top_k)))}
   end
 
   @impl true
@@ -50,16 +50,19 @@ defmodule RetrievalNodeWeb.SearchLive do
   defp search(q, source_id, top_k) do
     case String.trim(q) do
       "" ->
-        nil
+        %{results: nil, mode: :hybrid}
 
       text ->
         opts = if source_id == "", do: [top_k: top_k], else: [top_k: top_k, source_id: source_id]
-        hits = Search.hybrid_search(text, opts)
+        %{mode: mode, hits: hits} = Search.search(text, opts)
         chunks = Inventory.chunks_by_id(Enum.map(hits, & &1.chunk.id))
 
-        hits
-        |> Enum.with_index(1)
-        |> Enum.flat_map(&result(&1, chunks))
+        results =
+          hits
+          |> Enum.with_index(1)
+          |> Enum.flat_map(&result(&1, chunks))
+
+        %{results: results, mode: mode}
     end
   end
 
@@ -90,6 +93,14 @@ defmodule RetrievalNodeWeb.SearchLive do
           </.button>
         </div>
       </.form>
+
+      <div :if={@mode == :text_only} id="text-only" role="alert" class="alert alert-warning text-sm">
+        <.icon name="hero-exclamation-triangle" class="size-5" />
+        <span>
+          The embedding server is unreachable: these results use full-text ranking only.
+          See <.link navigate={~p"/connections"} class="link">Connections</.link>.
+        </span>
+      </div>
 
       <p :if={@results == []} class="opacity-60">No result.</p>
 

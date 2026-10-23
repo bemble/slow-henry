@@ -68,6 +68,7 @@ defmodule RetrievalNode.Search.HybridQuery do
     SELECT id, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank
     FROM chunks
     WHERE embedding IS NOT NULL
+      AND $1::vector IS NOT NULL
       AND ($5::uuid IS NULL OR source_id = $5)
       AND ($6::text IS NULL OR repo = $6)
       AND ($7::text IS NULL OR lang = $7)
@@ -120,7 +121,8 @@ defmodule RetrievalNode.Search.HybridQuery do
     top_k = opts |> Keyword.get(:top_k, @default_top_k) |> clamp_top_k()
 
     params = [
-      Pgvector.new(embedding),
+      # nil = text-only: the vector CTE is empty and RRF ranks on BM25 alone.
+      if(embedding, do: Pgvector.new(embedding)),
       text_query,
       @rrf_k,
       top_k,

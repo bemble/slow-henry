@@ -8,8 +8,11 @@ defmodule RetrievalNode.Embedding do
 
     * `RetrievalNode.Embedding.NxServingImpl` — the v1 default: in-process
       Bumblebee/Nx.Serving over nomic-embed-text-v1.5, Matryoshka-truncated to 384.
-    * `RetrievalNode.Embedding.LlamaCppSidecarImpl` — a stub escape hatch (HTTP to
-      a `llama.cpp --embedding` server) if Bumblebee/EXLA proves unworkable on arm64.
+    * `RetrievalNode.Embedding.OllamaImpl` — HTTP to Ollama (e.g. on an Apple
+      GPU), selected by `OLLAMA_ENDPOINT` (config/runtime.exs).
+
+  `embed/1` embeds a search query, `embed_batch/1` indexed chunks: impls that
+  use task prefixes (search_query / search_document) rely on that split.
 
   Vectors are bare `[float()]` (length `dimensions/0`), consumed directly by
   `Pgvector.new/1` in the search/ingest paths.
@@ -26,6 +29,13 @@ defmodule RetrievalNode.Embedding do
 
   @doc "The embedding dimensionality (384 after Matryoshka truncation)."
   @callback dimensions() :: pos_integer()
+
+  @doc """
+  Identifies the vector space this impl produces — backend, model and task
+  prefixes. Vectors with different profiles don't belong in one index; it is
+  stored on every chunk (`chunks.embedding_profile`).
+  """
+  @callback profile() :: String.t()
 
   @doc """
   The configured embedding implementation module.
@@ -58,4 +68,8 @@ defmodule RetrievalNode.Embedding do
   @doc "Embedding dimensionality (384 after Matryoshka truncation)."
   @spec dimensions() :: pos_integer()
   def dimensions, do: impl().dimensions()
+
+  @doc "The configured impl's profile (see the `profile/0` callback)."
+  @spec profile() :: String.t()
+  def profile, do: impl().profile()
 end

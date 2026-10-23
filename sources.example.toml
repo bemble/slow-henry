@@ -29,7 +29,7 @@ pull_requests = true   # merged PRs: description, comments, reviews (default fal
 # e.g. drive.google.com/drive/folders/<ID>; folders shared with you are only
 # crawled when listed there).
 # Only docs without a Classification label, or classified Public / Internal,
-# are indexed. Authorize once from the UI's Google page (/google).
+# are indexed. Authorize once from the UI's Connections page (/connections).
 [drive]
 my_drive = true
 shared_with_me = false
