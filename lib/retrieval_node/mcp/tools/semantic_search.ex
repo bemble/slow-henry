@@ -2,7 +2,8 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
   @moduledoc """
   Hybrid semantic + keyword search across indexed code, Jira issues, and Drive
   docs. Returns ranked back-links — `{source_type, repo, breadcrumb, metadata,
-  score}` — **not** full content; expand a hit with `get_file`.
+  score}` — **not** full content; expand a git hit with `get_file`, a Drive or
+  Jira hit with `get_document` (`metadata.doc_id` / `metadata.issue_key`).
   """
   use Anubis.Server.Component, type: :tool
 

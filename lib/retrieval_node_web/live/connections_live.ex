@@ -366,8 +366,8 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
     <section id="mcp" class="space-y-2">
       <h2 class="text-lg font-semibold">MCP server</h2>
       <p class="text-sm opacity-70">
-        The tools <code>semantic_search</code>, <code>grep</code>, <code>get_file</code>
-        and <code>list_repos</code>, over Streamable HTTP. No authentication: keep the
+        The tools <code>semantic_search</code>, <code>grep</code>, <code>get_file</code>,
+        <code>get_document</code> and <code>list_repos</code>, over Streamable HTTP. No authentication: keep the
         server on your LAN.
       </p>
       <p class="text-sm">

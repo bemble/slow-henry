@@ -32,7 +32,8 @@ exposed to clients as **MCP tools** over HTTP.
   fallback), Jira through the regex scanner; secrets are redacted in place
   before anything is embedded, and an append-only audit log records what was
   found (hash only).
-- **MCP tools:** `semantic_search`, `grep`, `get_file`, `list_repos`, at `/mcp`.
+- **MCP tools:** `semantic_search`, `grep`, `get_file` (git),
+  `get_document` (Drive doc / Jira issue text), `list_repos`, at `/mcp`.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;

@@ -169,4 +169,50 @@ defmodule RetrievalNode.Ingest do
         count
     end
   end
+
+  # --- document text ---
+
+  @doc """
+  The indexed text of one Drive doc (`source_type` `"drive_folder"`, `id` its
+  `doc_id`) or Jira issue (`"jira_project"`, `id` its `issue_key`), rebuilt from
+  its chunks in document order. Chunks are contiguous, non-overlapping spans
+  (blank-line separators dropped), so they are rejoined with a blank line.
+
+  Only active, allow-policy sources are reachable, like `list_repos/0`.
+  Returns `%{metadata, content}` — `metadata` is the doc's back-link metadata
+  without the per-chunk `chunk_index`.
+  """
+  @spec document(String.t(), String.t()) ::
+          {:ok, %{metadata: map(), content: String.t()}} | {:error, :not_found}
+  def document(source_type, id) when source_type in ["drive_folder", "jira_project"] do
+    case file_identity(source_type, %{@identity_metadata_field[source_type] => id}) do
+      nil -> {:error, :not_found}
+      {field, value} -> source_type |> document_chunks(field, value) |> assemble()
+    end
+  end
+
+  defp document_chunks(source_type, field, value) do
+    from(c in Chunk,
+      join: s in assoc(c, :source),
+      where: s.active == true and s.policy == :allow,
+      where: c.source_type == ^source_type,
+      order_by: [asc: c.source_id, asc: fragment("(?->>'chunk_index')::int", c.metadata)],
+      select: %{source_id: c.source_id, content: c.content, metadata: c.metadata}
+    )
+    |> scope_by_identity(field, value)
+    |> Repo.all()
+  end
+
+  defp assemble(chunks) do
+    case chunks do
+      [] ->
+        {:error, :not_found}
+
+      [first | _] ->
+        # A doc shared into two sources is indexed twice; return one copy.
+        chunks = Enum.filter(chunks, &(&1.source_id == first.source_id))
+        content = Enum.map_join(chunks, "\n\n", & &1.content)
+        {:ok, %{metadata: Map.delete(first.metadata, "chunk_index"), content: content}}
+    end
+  end
 end

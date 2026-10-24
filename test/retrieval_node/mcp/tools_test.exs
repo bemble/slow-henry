@@ -6,7 +6,7 @@ defmodule RetrievalNode.MCP.ToolsTest do
   alias Anubis.Server.Response
   alias RetrievalNode.Embedding
   alias RetrievalNode.Ingest.GitMirror
-  alias RetrievalNode.MCP.Tools.{GetFile, Grep, ListRepos, SemanticSearch}
+  alias RetrievalNode.MCP.Tools.{GetDocument, GetFile, Grep, ListRepos, SemanticSearch}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, Source}
 
@@ -188,6 +188,59 @@ defmodule RetrievalNode.MCP.ToolsTest do
     end
   end
 
+  describe "get_document" do
+    test "rebuilds a Drive doc's text from its chunks, in document order" do
+      source = Repo.insert!(%Source{source_type: :drive_folder, name: "drive", identifier: "d"})
+      meta = %{"doc_id" => "doc1", "name" => "Handbook", "url" => "https://docs/doc1"}
+
+      # Inserted out of order: chunk_index, not insertion order, drives the result.
+      insert_chunk(source, :drive_folder, "## Leave", metadata: Map.put(meta, "chunk_index", 1))
+      insert_chunk(source, :drive_folder, "# Handbook", metadata: Map.put(meta, "chunk_index", 0))
+
+      insert_chunk(source, :drive_folder, "other",
+        metadata: %{"doc_id" => "doc2", "chunk_index" => 0}
+      )
+
+      assert %{
+               "source" => "drive",
+               "id" => "doc1",
+               "name" => "Handbook",
+               "url" => "https://docs/doc1",
+               "metadata" => metadata,
+               "content" => "# Handbook\n\n## Leave"
+             } = ok(GetDocument, %{source: "drive", id: "doc1"})
+
+      refute Map.has_key?(metadata, "chunk_index")
+    end
+
+    test "fetches a Jira issue by issue_key" do
+      source = Repo.insert!(%Source{source_type: :jira_project, name: "PROJ", identifier: "PROJ"})
+      insert_chunk(source, :jira_project, "PROJ-1 body", metadata: %{"issue_key" => "PROJ-1"})
+
+      assert %{"content" => "PROJ-1 body"} = ok(GetDocument, %{source: "jira", id: "PROJ-1"})
+    end
+
+    test "a doc from an inactive or denied source is not reachable" do
+      off =
+        Repo.insert!(%Source{
+          source_type: :drive_folder,
+          name: "off",
+          identifier: "o",
+          active: false
+        })
+
+      insert_chunk(off, :drive_folder, "secret", metadata: %{"doc_id" => "hidden"})
+
+      assert err(GetDocument, %{source: "drive", id: "hidden"}) =~ "not indexed"
+    end
+
+    test "an unknown id or source is an error" do
+      assert err(GetDocument, %{source: "drive", id: "nope"}) =~ "not indexed"
+      assert err(GetDocument, %{source: "drive", id: "  "}) =~ "not indexed"
+      assert err(GetDocument, %{source: "git", id: "x"}) =~ "unknown source"
+    end
+  end
+
   # --- helpers ---
 
   # Run a tool and decode a successful JSON payload (string-keyed).
@@ -245,6 +298,7 @@ defmodule RetrievalNode.MCP.ToolsTest do
         content_hash: "h-#{System.unique_integer([:positive])}",
         content: content,
         context_breadcrumb: opts[:breadcrumb] || "bc",
+        metadata: opts[:metadata] || %{},
         embedding: Embedding.embed(content)
       })
     )
