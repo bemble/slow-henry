@@ -50,6 +50,16 @@ if config_env() != :test do
     token: System.get_env("GITHUB_TOKEN")
 end
 
+# Jira Cloud API token for the [[jira]] sources (RetrievalNode.Jira.Credentials):
+# entered on the Connections page and stored by RetrievalNode.Secrets. These
+# three, when all set, override it.
+if config_env() != :test do
+  config :retrieval_node, :jira,
+    base_url: System.get_env("JIRA_BASE_URL"),
+    email: System.get_env("JIRA_EMAIL"),
+    api_token: System.get_env("JIRA_API_TOKEN")
+end
+
 # Where the app keeps what it writes itself (secrets.toml, …): DATA_DIR,
 # else ./data in dev and /var/lib/retrieval_node in a release.
 cond do

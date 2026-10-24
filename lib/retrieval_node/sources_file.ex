@@ -1,7 +1,7 @@
 defmodule RetrievalNode.SourcesFile do
   @moduledoc """
-  `sources.toml` is the source of truth for the git repos and the Google Drive
-  scope that are indexed. It lives in the data dir (`DATA_DIR/sources.toml`,
+  `sources.toml` is the source of truth for the git repos, the Jira projects
+  and the Google Drive scope that are indexed. It lives in the data dir (`DATA_DIR/sources.toml`,
   git-ignored: it names private repos and Drive ids; `SOURCES_FILE`
   overrides the path); `sources.example.toml` is the template.
 
@@ -11,6 +11,13 @@ defmodule RetrievalNode.SourcesFile do
       # active = false                              # keep indexed chunks, stop syncing
       # exclude = ["docs/*", "!docs/adr"]           # .gitignore-style (Ingest.PathFilter)
       # pull_requests = true                        # also index merged PRs (default false)
+
+      [[jira]]
+      project = "CLOUD"                             # project key (the source identity)
+      # active = false
+      # assignee = true                             # also index the assignee (default false)
+      # reporter = true                             # also index the reporter (default false)
+      # parent = true                               # also index the parent / epic (default false)
 
       [drive]
       my_drive = true                               # Docs you own (default true)
@@ -33,7 +40,7 @@ defmodule RetrievalNode.SourcesFile do
     * an entry with no matching source is **added** and gets its first sync;
     * a known one whose name, `active` flag or Drive scope differs is
       **updated**; re-activation, or a changed Drive scope, triggers a sync;
-    * a git or Drive source in the database but no longer in the file is
+    * a git, Jira or Drive source in the database but no longer in the file is
       **deactivated** — never deleted, so its chunks stay searchable and
       putting it back resumes from its cursor.
 
@@ -41,32 +48,35 @@ defmodule RetrievalNode.SourcesFile do
   with `save/3` (`encode/1`, which does not keep comments), then lets the
   watcher apply it.
 
-  Jira is still registered by `mix rn.seed` from its credentials.
+  Jira projects are synced with the credentials entered on the Connections
+  page (`Jira.Credentials`).
   """
 
   import Ecto.Query
 
   alias RetrievalNode.Ingest.{DrivePolicy, PathFilter}
-  alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.TomlWriter
 
   @file_name "sources.toml"
-  @managed_types [:git_repo, :drive_folder]
+  @managed_types [:git_repo, :jira_project, :drive_folder]
   @drive_identifier "drive:me"
   @name_format ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   @url_schemes ~w(https:// http:// ssh:// git:// file://)
   @drive_id_format ~r/\A[A-Za-z0-9_-]+\z/
+  @project_key_format ~r/\A[A-Z][A-Z0-9_]*\z/
+  @jira_options ~w(assignee reporter parent)
   @header """
-  # Sources indexed by Slow Henry (git repos + Google Drive), written by the
-  # Sources editor (/sources/edit). Hand edits work too, but the editor does
-  # not keep comments. Format and rules: RetrievalNode.SourcesFile.
+  # Sources indexed by Slow Henry (git repos, Jira projects, Google Drive),
+  # written by the Sources editor (/sources/edit). Hand edits work too, but the
+  # editor does not keep comments. Format and rules: RetrievalNode.SourcesFile.
   """
 
   @typedoc "A source as the file wants it."
   @type entry :: %{
-          source_type: :git_repo | :drive_folder,
+          source_type: :git_repo | :jira_project | :drive_folder,
           identifier: String.t(),
           name: String.t(),
           active: boolean(),
@@ -77,6 +87,9 @@ defmodule RetrievalNode.SourcesFile do
           | {:update, Source.t(), entry()}
           | {:deactivate, Source.t()}
           | {:unchanged, Source.t()}
+
+  @doc "The optional Jira fields a `[[jira]]` project can index."
+  def jira_options, do: @jira_options
 
   @doc "The identifier of the (single) Drive source."
   def drive_identifier, do: @drive_identifier
@@ -165,14 +178,19 @@ defmodule RetrievalNode.SourcesFile do
   end
 
   @doc """
-  The file for `entries`: `[[git]]` tables in order, then `[drive]`. Only
+  The file for `entries`: `[[git]]` tables in order, then `[[jira]]`, then
+  `[drive]`. Only
   options that differ from their default are written, except Drive's scope
   and label filters.
   """
   @spec encode([entry()]) :: String.t()
   def encode(entries) do
-    {drive, git} = Enum.split_with(entries, &(&1.source_type == :drive_folder))
-    tables = Enum.map(git, &git_table/1) ++ Enum.map(drive, &drive_table/1)
+    by_type = Enum.group_by(entries, & &1.source_type)
+
+    tables =
+      Enum.map(by_type[:git_repo] || [], &git_table/1) ++
+        Enum.map(by_type[:jira_project] || [], &jira_table/1) ++
+        Enum.map(by_type[:drive_folder] || [], &drive_table/1)
 
     Enum.join([@header | tables], "\n")
   end
@@ -185,6 +203,14 @@ defmodule RetrievalNode.SourcesFile do
       {"exclude", e.config["exclude"]},
       {"pull_requests", e.config["pull_requests"]}
     ])
+  end
+
+  defp jira_table(e) do
+    table(
+      "[[jira]]",
+      [{"project", e.identifier}, {"active", if(e.active, do: nil, else: false)}] ++
+        for(o <- @jira_options, do: {o, e.config[o]})
+    )
   end
 
   defp drive_table(e) do
@@ -219,8 +245,11 @@ defmodule RetrievalNode.SourcesFile do
          {:ok, git} <- collect(raw),
          :ok <- unique(git, :name),
          :ok <- unique(git, :identifier),
+         {:ok, raw_jira} <- jira_tables(doc),
+         {:ok, jira} <- collect_jira(raw_jira),
+         :ok <- unique(jira, :identifier),
          {:ok, drive} <- drive_entry(Map.get(doc, "drive")) do
-      {:ok, git ++ List.wrap(drive)}
+      {:ok, git ++ jira ++ List.wrap(drive)}
     end
   end
 
@@ -301,7 +330,7 @@ defmodule RetrievalNode.SourcesFile do
 
     main =
       cond do
-        # A changed scope (Drive include, git exclude) affects content that
+        # A changed scope (Drive include, git exclude, Jira options) affects content that
         # didn't change: re-read everything.
         scope(old) != scope(e.config) -> [{worker(e), %{"mode" => "full"}}]
         not s.active -> [{worker(e), %{}}]
@@ -323,6 +352,7 @@ defmodule RetrievalNode.SourcesFile do
   defp scope(config), do: Map.delete(config, "pull_requests")
 
   defp worker(%{source_type: :drive_folder}), do: DriveSync
+  defp worker(%{source_type: :jira_project}), do: JiraSync
   defp worker(_entry), do: RepoSync
 
   defp enqueue!(source, {worker, args}) do
@@ -353,7 +383,7 @@ defmodule RetrievalNode.SourcesFile do
   end
 
   defp known_sections(doc) do
-    case Map.keys(doc) -- ~w(git drive) do
+    case Map.keys(doc) -- ~w(git jira drive) do
       [] -> :ok
       unknown -> {:error, "unknown section(s) #{Enum.join(unknown, ", ")}"}
     end
@@ -425,6 +455,56 @@ defmodule RetrievalNode.SourcesFile do
     |> then(&if(exclude != [], do: Map.put(&1, "exclude", exclude), else: &1))
     |> then(&if(pull_requests, do: Map.put(&1, "pull_requests", true), else: &1))
   end
+
+  defp jira_tables(doc) do
+    case Map.get(doc, "jira", []) do
+      list when is_list(list) -> {:ok, list}
+      _ -> {:error, "`jira` must be an array of tables ([[jira]])"}
+    end
+  end
+
+  defp collect_jira(raw) do
+    raw
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {item, i}, {:ok, acc} ->
+      case jira_entry(item) do
+        {:ok, e} -> {:cont, {:ok, acc ++ [e]}}
+        {:error, msg} -> {:halt, {:error, "[[jira]] ##{i}: #{msg}"}}
+      end
+    end)
+  end
+
+  defp jira_entry(%{"project" => project} = item) when is_binary(project) do
+    active = Map.get(item, "active", true)
+    options = Map.take(item, @jira_options)
+    unknown = Map.keys(item) -- ["project", "active" | @jira_options]
+
+    cond do
+      unknown != [] ->
+        {:error, "unknown key(s) #{Enum.join(unknown, ", ")}"}
+
+      not Regex.match?(@project_key_format, project) ->
+        {:error, "invalid project key #{inspect(project)} (e.g. \"CLOUD\")"}
+
+      not Enum.all?([active | Map.values(options)], &is_boolean/1) ->
+        {:error,
+         "`active`, #{Enum.map_join(@jira_options, ", ", &"`#{&1}`")} must be true or false"}
+
+      true ->
+        {:ok,
+         %{
+           source_type: :jira_project,
+           identifier: project,
+           name: "Jira: #{project}",
+           active: active,
+           # Stored only when on, like the git options.
+           config: for({k, true} <- options, into: %{}, do: {k, true})
+         }}
+    end
+  end
+
+  defp jira_entry(%{}), do: {:error, "`project` (the project key) is required"}
+  defp jira_entry(_), do: {:error, "must be a table"}
 
   defp drive_entry(nil), do: {:ok, nil}
 
@@ -563,6 +643,10 @@ defmodule RetrievalNode.SourcesFile do
 
   defp drive_id?(id), do: is_binary(id) and Regex.match?(@drive_id_format, id)
 
+  defp identifier_name([%{source_type: :jira_project} | _], :identifier), do: "project"
+  defp identifier_name(_entries, :identifier), do: "url"
+  defp identifier_name(_entries, key), do: key
+
   defp unique(entries, key) do
     case entries
          |> Enum.frequencies_by(&Map.fetch!(&1, key))
@@ -571,7 +655,7 @@ defmodule RetrievalNode.SourcesFile do
         :ok
 
       {value, _} ->
-        {:error, "duplicate #{if key == :identifier, do: "url", else: key} #{inspect(value)}"}
+        {:error, "duplicate #{identifier_name(entries, key)} #{inspect(value)}"}
     end
   end
 end

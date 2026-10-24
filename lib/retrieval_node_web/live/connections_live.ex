@@ -2,8 +2,13 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   @moduledoc """
   The app's version, how to add its MCP endpoint to a client, and the
   external services Slow Henry talks to: the Ollama embedding server (when
-  `OLLAMA_ENDPOINT` is set), and Google Drive authorization, entirely from
-  the UI.
+  `OLLAMA_ENDPOINT` is set), the GitHub App, the Jira API token, and Google
+  Drive authorization, entirely from the UI.
+
+  Jira credentials (site, email, API token) are checked against Jira's
+  `/myself` before being stored (`RetrievalNode.Jira.Credentials`), through
+  the scoped-token gateway when the site refuses the token
+  (`Ingest.Jira.connect/1`); the token is never displayed again.
 
   The MCP URL shown is built from the URL the page was opened with, so it is
   the address this browser reaches the server at (a LAN host, not
@@ -32,7 +37,8 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   alias RetrievalNode.Embedding.OllamaImpl
   alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
   alias RetrievalNode.Google.OAuth
-  alias RetrievalNode.Ingest.Drive
+  alias RetrievalNode.Ingest.{Drive, Jira}
+  alias RetrievalNode.Jira.Credentials, as: JiraCredentials
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.SourcesFile
@@ -55,11 +61,40 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         profiles: RetrievalNode.Inventory.embedding_profiles(),
         github: github_state(),
         device: nil,
-        github_error: nil
+        github_error: nil,
+        jira: jira_state(),
+        jira_form: jira_form(),
+        jira_error: nil
       )
 
     socket = if ollama? and connected?(socket), do: probe_ollama(socket), else: socket
-    {:ok, if(connected?(socket), do: fetch_github_login(socket), else: socket)}
+
+    socket =
+      if connected?(socket),
+        do: socket |> fetch_github_login() |> fetch_jira_user(),
+        else: socket
+
+    {:ok, socket}
+  end
+
+  defp jira_state, do: %{source: JiraCredentials.source(), user: nil, checking: false}
+
+  # Prefilled with the stored site and email; never the token.
+  defp jira_form do
+    {base_url, email} =
+      case JiraCredentials.get() do
+        {:ok, creds} -> {creds.base_url, creds.email}
+        _ -> {"", ""}
+      end
+
+    to_form(%{"base_url" => base_url, "email" => email, "api_token" => ""}, as: :jira)
+  end
+
+  defp fetch_jira_user(socket) do
+    case JiraCredentials.get() do
+      {:ok, creds} -> start_async(socket, :jira_user, fn -> Jira.myself(creds) end)
+      _ -> socket
+    end
   end
 
   defp github_state,
@@ -85,6 +120,32 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
     do: {:noreply, assign(socket, github_error: "Token rejected: #{inspect(reason)}")}
 
   def handle_async(:github_login, {:exit, _reason}, socket), do: {:noreply, socket}
+
+  def handle_async(:jira_user, {:ok, {:ok, name}}, socket),
+    do: {:noreply, update(socket, :jira, &Map.put(&1, :user, name))}
+
+  def handle_async(:jira_user, {:ok, {:error, reason}}, socket),
+    do: {:noreply, assign(socket, jira_error: describe_jira(reason))}
+
+  def handle_async(:jira_user, {:exit, _reason}, socket), do: {:noreply, socket}
+
+  # The credentials typed in passed the check: store them.
+  def handle_async(:jira_save, {:ok, {:ok, name, creds}}, socket) do
+    :ok = JiraCredentials.store(creds)
+
+    {:noreply,
+     assign(socket,
+       jira: %{jira_state() | user: name},
+       jira_form: jira_form(),
+       jira_error: nil
+     )}
+  end
+
+  def handle_async(:jira_save, {:ok, {:error, reason}}, socket),
+    do: {:noreply, assign(socket, jira: jira_state(), jira_error: describe_jira(reason))}
+
+  def handle_async(:jira_save, {:exit, reason}, socket),
+    do: {:noreply, assign(socket, jira: jira_state(), jira_error: describe_jira(reason))}
 
   def handle_async(:ollama, {:exit, reason}, socket),
     do:
@@ -167,6 +228,35 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   def handle_event("disconnect_github", _params, socket) do
     :ok = GitHubOAuth.forget()
     {:noreply, assign(socket, github: github_state(), device: nil)}
+  end
+
+  def handle_event("save_jira", %{"jira" => params}, socket) do
+    email = String.trim(params["email"] || "")
+    token = String.trim(params["api_token"] || "")
+    form = to_form(Map.put(params, "api_token", ""), as: :jira)
+
+    case JiraCredentials.normalize_base_url(params["base_url"] || "") do
+      _ when email == "" or token == "" ->
+        {:noreply,
+         assign(socket, jira_form: form, jira_error: "The email and the API token are required.")}
+
+      :error ->
+        {:noreply, assign(socket, jira_form: form, jira_error: "The site URL is not valid.")}
+
+      {:ok, base_url} ->
+        creds = %{base_url: base_url, email: email, api_token: token}
+
+        {:noreply,
+         socket
+         |> assign(jira_form: form, jira_error: nil)
+         |> update(:jira, &Map.put(&1, :checking, true))
+         |> start_async(:jira_save, fn -> Jira.connect(creds) end)}
+    end
+  end
+
+  def handle_event("disconnect_jira", _params, socket) do
+    :ok = JiraCredentials.forget()
+    {:noreply, assign(socket, jira: jira_state(), jira_form: jira_form(), jira_error: nil)}
   end
 
   def handle_event("disconnect_google", _params, socket) do
@@ -256,6 +346,22 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   defp describe(other), do: "Authorization failed: #{inspect(other)}"
 
+  defp describe_jira({:unauthorized, status, message}) do
+    why = Enum.join(Enum.reject(["HTTP #{status}", message], &is_nil/1), ": ")
+
+    "Jira refused these credentials (#{why}): " <>
+      "check the email (your Atlassian account's) and the API token, and for a token " <>
+      "with scopes, that it has read:jira-work and read:jira-user."
+  end
+
+  defp describe_jira(:not_jira), do: "That site didn't answer like Jira Cloud."
+  defp describe_jira({:jira_http, status}), do: "Jira answered HTTP #{status}."
+
+  defp describe_jira(%{__exception__: true} = e),
+    do: "Jira is unreachable: #{Exception.message(e)}"
+
+  defp describe_jira(other), do: "Jira check failed: #{inspect(other)}"
+
   defp mcp_url(uri) do
     %URI{URI.parse(uri) | path: "/mcp", query: nil, fragment: nil} |> URI.to_string()
   end
@@ -291,6 +397,8 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
       </section>
 
       <.github_section github={@github} device={@device} error={@github_error} />
+
+      <.jira_section jira={@jira} form={@jira_form} error={@jira_error} />
 
       <div>
         <h2 class="text-lg font-semibold">Google Drive</h2>
@@ -479,6 +587,81 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
       </div>
 
       <div :if={@error} id="github-error" role="alert" class="alert alert-error text-sm">
+        <.icon name="hero-x-circle" class="size-5" />
+        <span>{@error}</span>
+      </div>
+    </section>
+    """
+  end
+
+  attr :jira, :map, required: true
+  attr :form, :any, required: true
+  attr :error, :any, required: true
+
+  defp jira_section(assigns) do
+    ~H"""
+    <section id="jira" class="space-y-2">
+      <h2 class="text-lg font-semibold">Jira</h2>
+      <p class="text-sm opacity-70">
+        An Atlassian API token, for the <code>[[jira]]</code>
+        projects in sources.toml. Create one at
+        <a
+          href="https://id.atlassian.com/manage-profile/security/api-tokens"
+          target="_blank"
+          class="link"
+        >id.atlassian.com → Security → API tokens</a>; it reads what your account can read.
+      </p>
+
+      <div class="flex flex-wrap items-center gap-3 text-sm">
+        <span class={["badge", if(@jira.source, do: "badge-success", else: "badge-ghost")]}>
+          {if @jira.source, do: "connected", else: "not connected"}
+        </span>
+        <span :if={@jira.user}>as <strong>{@jira.user}</strong></span>
+        <span :if={@jira.source == :env} class="opacity-70">
+          (from <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code> and <code>JIRA_API_TOKEN</code>,
+          which override the stored ones)
+        </span>
+        <button
+          :if={@jira.source == :secrets}
+          id="disconnect-jira"
+          phx-click="disconnect_jira"
+          data-confirm="Forget the stored Jira token? Jira sync stops until you connect again."
+          class="btn btn-ghost btn-sm"
+        >
+          Disconnect
+        </button>
+      </div>
+
+      <.form
+        :if={@jira.source != :env}
+        for={@form}
+        id="jira-form"
+        phx-submit="save_jira"
+        class="grid gap-x-3 sm:grid-cols-3"
+      >
+        <.input
+          field={@form[:base_url]}
+          label="Site"
+          placeholder="https://my-site.atlassian.net"
+          autocomplete="off"
+        />
+        <.input field={@form[:email]} type="email" label="Email" autocomplete="off" />
+        <.input
+          field={@form[:api_token]}
+          type="password"
+          label="API token"
+          placeholder={if @jira.source, do: "(stored; paste a new one to replace it)"}
+          autocomplete="off"
+        />
+        <div class="sm:col-span-3">
+          <.button disabled={@jira.checking}>
+            <span :if={@jira.checking} class="loading loading-spinner loading-xs"></span>
+            {if @jira.source, do: "Check and replace", else: "Check and save"}
+          </.button>
+        </div>
+      </.form>
+
+      <div :if={@error} id="jira-error" role="alert" class="alert alert-error text-sm">
         <.icon name="hero-x-circle" class="size-5" />
         <span>{@error}</span>
       </div>

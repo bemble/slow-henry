@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Rn.Seed do
-  @shortdoc "Seeds the thin corpus sources (git/jira) and enqueues their first sync"
+  @shortdoc "Seeds a git source (this repo by default) and enqueues its first sync"
 
   @moduledoc """
   Registers the thin-corpus ingest sources (design-mcp.md Phase 9 Task 1) so the
@@ -13,27 +13,9 @@ defmodule Mix.Tasks.Rn.Seed do
 
       mix rn.seed --git-url file:///path/to/some/repo.git --repo some-repo
 
-  Git repos and Google Drive are normally declared in `sources.toml` and
-  applied with `mix rn.sources`; this task remains for ad-hoc git seeding and
-  Jira.
-
-  ## Jira (only when credentials are present)
-
-  The client doesn't read credentials from the environment on its own (see
-  `RetrievalNode.Ingest.Jira` — it reads `config :retrieval_node, :jira`,
-  normally set at deploy time). This
-  task is the one place that maps env vars to that config, so credentials can
-  be supplied straight from the shell for a first seed:
-
-    * Jira: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`
-      (all four required — the last becomes the JQL project and the source's
-      `identifier`).
-
-  Whichever process actually *runs* the enqueued sync job (the dev server or
-  the production Oban instance) needs these same env vars at its own boot —
-  setting them only for this task's shell configures the source, not that
-  other process. When a var is missing, the source is left unregistered and a
-  `SKIPPED` line names exactly what to set.
+  Git repos, Jira projects and Google Drive are normally declared in
+  `sources.toml` and applied with `mix rn.sources`; this task remains for
+  ad-hoc git seeding.
 
   ## Idempotency
 
@@ -54,7 +36,7 @@ defmodule Mix.Tasks.Rn.Seed do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.{JiraSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.RepoSync
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
@@ -123,7 +105,6 @@ defmodule Mix.Tasks.Rn.Seed do
 
   defp seed(opts) do
     seed_git(opts)
-    seed_jira()
 
     Mix.shell().info("""
 
@@ -143,50 +124,6 @@ defmodule Mix.Tasks.Rn.Seed do
     {:ok, source} = upsert_source(%{source_type: :git_repo, name: name, identifier: url})
 
     enqueue!(RepoSync, source, "git repo #{inspect(name)} (#{url})")
-  end
-
-  @jira_vars ~w(JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN JIRA_PROJECT_KEY)
-
-  defp seed_jira do
-    case jira_env() do
-      {:ok, %{base_url: base_url, email: email, api_token: api_token, project_key: project_key}} ->
-        Application.put_env(:retrieval_node, :jira,
-          base_url: base_url,
-          email: email,
-          api_token: api_token
-        )
-
-        {:ok, source} =
-          upsert_source(%{
-            source_type: :jira_project,
-            name: "Jira: #{project_key}",
-            identifier: project_key
-          })
-
-        enqueue!(JiraSync, source, "Jira project #{inspect(project_key)}")
-
-      {:error, _missing} ->
-        skip("Jira", @jira_vars)
-    end
-  end
-
-  defp jira_env do
-    case Enum.map(@jira_vars, &System.get_env/1) do
-      [base_url, email, api_token, project_key]
-      when is_binary(base_url) and is_binary(email) and is_binary(api_token) and
-             is_binary(project_key) ->
-        {:ok, %{base_url: base_url, email: email, api_token: api_token, project_key: project_key}}
-
-      _ ->
-        {:error, @jira_vars}
-    end
-  end
-
-  defp skip(label, vars) do
-    Mix.shell().info(
-      "SKIPPED #{label}: set #{Enum.join(vars, ", ")} (in the shell running this task AND " <>
-        "wherever the sync job executes), then rerun `mix rn.seed`."
-    )
   end
 
   # --- Source upsert (idempotent on the [:source_type, :identifier] unique key) ---

@@ -1,4 +1,4 @@
-# Sources indexed by Slow Henry (git repos + Google Drive).
+# Sources indexed by Slow Henry (git repos, Jira projects, Google Drive).
 # Copy to DATA_DIR/sources.toml (data/sources.toml in dev, git-ignored). The
 # server applies it at start and whenever it changes; `mix rn.sources
 # --dry-run` previews. SOURCES_FILE=path points at another file.
@@ -24,6 +24,15 @@ name = "core"
 url = "https://github.com/home-assistant/core.git"
 exclude = ["homeassistant/components/*", "!homeassistant/components/cloud"]
 pull_requests = true   # merged PRs: description, comments, reviews (default false)
+
+# Jira: the resolved issues (status category Done) of a project, by its key:
+# summary, description, type and status, plus the fields turned on below.
+# Connect Jira (site, email, API token) on the Connections page first.
+[[jira]]
+project = "CLOUD"
+assignee = true   # also index the assignee (default false)
+reporter = true   # also index the reporter (default false)
+parent = true     # also index the parent issue, e.g. the epic (default false)
 
 # Google Drive: Docs you own, optionally the Docs shared directly with you,
 # plus the shared drives / folders listed in `include` (ids from their URLs,

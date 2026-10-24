@@ -124,7 +124,7 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
 | `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira source, registered with `mix rn.seed`. |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Optional: Jira credentials that override the ones stored by `/connections` (all three). |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
 | `PORT` | HTTP port (default 4000). |
 | `SECRET_KEY_BASE` | Prod only, required: signs cookies (`mix phx.gen.secret`). |
@@ -228,7 +228,8 @@ to full-text ranking — the search page shows a notice, and the
 
 ## Sources
 
-Git repos and the Google Drive scope are declared in `DATA_DIR/sources.toml`
+Git repos, Jira projects and the Google Drive scope are declared in
+`DATA_DIR/sources.toml`
 (`data/sources.toml` in dev, git-ignored since it names private repos; start
 by copying `sources.example.toml` there):
 
@@ -240,6 +241,13 @@ url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # exclude = ["docs/*", "!docs/adr"]            # paths to leave out (see below)
 # pull_requests = true                         # also index merged PRs (default false)
 
+[[jira]]
+project = "CLOUD"                # project key (the source identity)
+# active = false
+# assignee = true                # also index the assignee (default false)
+# reporter = true                # also index the reporter (default false)
+# parent = true                  # also index the parent / epic (default false)
+
 [drive]
 my_drive = true                  # Docs you own (default true)
 shared_with_me = false           # Docs shared directly with you (default false)
@@ -249,7 +257,7 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), `exclude` patterns and Drive ids are plain text fields (a pasted Drive
+URL), Jira projects are added by key, `exclude` patterns and Drive ids are plain text fields (a pasted Drive
 folder URL is turned into its id), and a review step shows what will change
 before saving. Saving rewrites the file without its comments, and is refused
 if the file changed on disk since the page was opened.
@@ -282,11 +290,35 @@ also stored as metadata, so `semantic_search` can filter by `author`,
 `reviewer`, or `involves` (either one).
 They are synced hourly, picking up PRs edited or commented after merge.
 
-New sources get their first sync right away, then git syncs every 15 minutes
-and Drive every 30 minutes (plus a full Drive pass daily at 04:15). A source
-removed from the file is **deactivated, never deleted**: its chunks stay
-searchable and putting it back resumes where it stopped. Jira is still
-registered with `mix rn.seed` from its environment variables.
+New sources get their first sync right away, then git syncs every 15 minutes,
+Jira hourly and Drive every 30 minutes (plus a full Drive pass daily at 04:15).
+A source removed from the file is **deactivated, never deleted**: its chunks
+stay searchable and putting it back resumes where it stopped.
+
+### Jira
+
+Each `[[jira]]` project's **resolved** issues (status category Done) are
+indexed, one document per issue: a header with the key and summary, type,
+status and resolution and resolution date, then the description. Three
+options, off by default like `pull_requests`, add a field: `assignee`,
+`reporter` and `parent` (the parent issue: the epic, for a story). Comments,
+labels and attachments are not indexed. The same fields are stored as
+metadata, so `semantic_search` can filter by `issue_type` (e.g. `Bug`) and,
+when the option is on, `assignee` / `reporter` (part of a display name,
+case-insensitive) and `parent` (an epic's key: its children); `get_document`
+returns an issue's text by its key. Issues are synced hourly, from the last
+resolution date seen; changing an option re-syncs the whole project.
+
+Credentials: create an **API token** at
+[id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+(it reads what your account can read), then enter the site
+(`https://my-site.atlassian.net`), your Atlassian email and the token on
+`/connections`. They are checked against Jira, then stored in
+`DATA_DIR/secrets.toml` (the token is never displayed); **Disconnect** forgets
+them. A scoped token (read-only, `read:jira-work`) works too, with
+`https://api.atlassian.com/ex/jira/<cloudId>` as the site.
+`JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`, when all set, override the
+stored ones. Without credentials, Jira syncs are cancelled.
 
 ### Google Drive
 

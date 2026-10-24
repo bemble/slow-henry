@@ -381,4 +381,116 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       assert html =~ "GITHUB_CLIENT_ID"
     end
   end
+
+  describe "Jira" do
+    alias RetrievalNode.Secrets
+
+    setup do
+      prev = %{
+        jira: Application.get_env(:retrieval_node, :jira),
+        req: Application.get_env(:retrieval_node, :jira_req_options)
+      }
+
+      Application.put_env(:retrieval_node, :jira, [])
+      Application.put_env(:retrieval_node, :jira_req_options, plug: {Req.Test, __MODULE__})
+
+      on_exit(fn ->
+        Application.put_env(:retrieval_node, :jira, prev.jira)
+        Application.put_env(:retrieval_node, :jira_req_options, prev.req)
+      end)
+
+      # "good" works on the site; "scoped" (a token with scopes) only through
+      # the gateway, which the site's tenant_info leads to.
+      Req.Test.stub(__MODULE__, fn conn ->
+        auth = Plug.Conn.get_req_header(conn, "authorization")
+
+        case {conn.host, conn.request_path, auth} do
+          {"acme.atlassian.net", "/_edge/tenant_info", []} ->
+            Req.Test.json(conn, %{"cloudId" => "c1d"})
+
+          {"acme.atlassian.net", "/rest/api/3/myself", ["Basic " <> basic]}
+          when basic == "bWVAYWNtZS5jb206Z29vZA==" ->
+            Req.Test.json(conn, %{"displayName" => "Ada Lovelace"})
+
+          {"api.atlassian.com", "/ex/jira/c1d/rest/api/3/myself", ["Basic " <> basic]}
+          when basic == "bWVAYWNtZS5jb206c2NvcGVk" ->
+            Req.Test.json(conn, %{"displayName" => "Ada Lovelace"})
+
+          {"api.atlassian.com", _path, _auth} ->
+            conn
+            |> Plug.Conn.put_status(401)
+            |> Req.Test.json(%{"code" => 401, "message" => "Unauthorized; scope does not match"})
+
+          _ ->
+            Plug.Conn.send_resp(conn, 401, "<html>nope</html>")
+        end
+      end)
+
+      :ok
+    end
+
+    defp submit_jira(view, token) do
+      view
+      |> form("#jira-form",
+        jira: %{
+          base_url: "acme.atlassian.net/jira/boards/1",
+          email: "me@acme.com",
+          api_token: token
+        }
+      )
+      |> render_submit()
+
+      render_async(view)
+    end
+
+    test "checks the credentials, stores them, never shows the token", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      html = submit_jira(view, "good")
+
+      assert html =~ "Ada Lovelace"
+      refute html =~ "good\""
+      assert Secrets.get("jira_base_url") == "https://acme.atlassian.net"
+      assert Secrets.get("jira_email") == "me@acme.com"
+      assert Secrets.get("jira_api_token") == "good"
+
+      # Still connected on the next visit, and Disconnect forgets everything.
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      assert render_async(view) =~ "Ada Lovelace"
+      view |> element("#disconnect-jira") |> render_click()
+      assert Secrets.get("jira_api_token") == nil
+      refute has_element?(view, "#disconnect-jira")
+    end
+
+    test "a token with scopes goes through the gateway, the site kept for links",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      assert submit_jira(view, "scoped") =~ "Ada Lovelace"
+
+      assert Secrets.get("jira_base_url") == "https://api.atlassian.com/ex/jira/c1d"
+      assert Secrets.get("jira_site_url") == "https://acme.atlassian.net"
+      assert Secrets.get("jira_api_token") == "scoped"
+    end
+
+    test "rejected credentials are reported with Jira's reason, and not stored", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      submit_jira(view, "bad")
+
+      error = view |> element("#jira-error") |> render()
+      assert error =~ "refused these credentials (HTTP 401: Unauthorized; scope does not match)"
+      assert Secrets.get("jira_api_token") == nil
+    end
+
+    test "credentials from the environment hide the form", %{conn: conn} do
+      Application.put_env(:retrieval_node, :jira,
+        base_url: "https://acme.atlassian.net",
+        email: "me@acme.com",
+        api_token: "good"
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/connections")
+      assert render_async(view) =~ "Ada Lovelace"
+      assert has_element?(view, "#jira", "JIRA_API_TOKEN")
+      refute has_element?(view, "#jira-form")
+    end
+  end
 end

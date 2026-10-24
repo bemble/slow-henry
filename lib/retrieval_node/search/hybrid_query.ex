@@ -8,7 +8,8 @@ defmodule RetrievalNode.Search.HybridQuery do
   at the edge of what the macro DSL expresses cleanly, and the load-bearing
   correctness property is far easier to read (and `EXPLAIN ANALYZE`) in plain
   SQL. That property: the optional `source_id`/`repo`/`lang`/`source_type`
-  (and PR `author`/`reviewer`/`involves`) filters are applied **inside each leg's own `WHERE`** — so the `row_number()`
+  (and PR `author`/`reviewer`/`involves`, Jira `issue_type`/`assignee`/
+  `reporter`/`parent`) filters are applied **inside each leg's own `WHERE`** — so the `row_number()`
   window ranks only the already-filtered set. A filter applied after fusion
   could let an out-of-scope chunk consume a rank-1 slot and starve an in-scope
   chunk, silently degrading filtered recall.
@@ -63,6 +64,10 @@ defmodule RetrievalNode.Search.HybridQuery do
           author: String.t() | nil,
           reviewer: String.t() | nil,
           involves: String.t() | nil,
+          issue_type: String.t() | nil,
+          assignee: String.t() | nil,
+          reporter: String.t() | nil,
+          parent: String.t() | nil,
           top_k: pos_integer()
         ]
 
@@ -74,13 +79,13 @@ defmodule RetrievalNode.Search.HybridQuery do
       ") r WHERE lower(r) = lower(#{param}))"
   end
 
-  @sql """
-  WITH vector_search AS (
-    SELECT id, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank
-    FROM chunks
-    WHERE embedding IS NOT NULL
-      AND $1::vector IS NOT NULL
-      AND ($5::uuid IS NULL OR source_id = $5)
+  # Jira people are display names, matched as a case-insensitive substring
+  # ("pierre" finds "Pierre Clément"); type and parent key are exact. Chunks
+  # without the metadata (git, Drive) never match.
+  contains = fn field, param -> "strpos(lower(metadata->>'#{field}'), lower(#{param})) > 0" end
+
+  filters = """
+  AND ($5::uuid IS NULL OR source_id = $5)
       AND ($6::text IS NULL OR repo = $6)
       AND ($7::text IS NULL OR lang = $7)
       AND ($8::text IS NULL OR source_type = $8)
@@ -88,6 +93,19 @@ defmodule RetrievalNode.Search.HybridQuery do
       AND ($10::text IS NULL OR #{reviewed_by.("$10")})
       AND ($11::text IS NULL OR lower(metadata->>'author') = lower($11)
            OR #{reviewed_by.("$11")})
+      AND ($12::text IS NULL OR lower(metadata->>'issue_type') = lower($12))
+      AND ($13::text IS NULL OR #{contains.("assignee", "$13")})
+      AND ($14::text IS NULL OR #{contains.("reporter", "$14")})
+      AND ($15::text IS NULL OR upper(metadata->>'parent') = upper($15))
+  """
+
+  @sql """
+  WITH vector_search AS (
+    SELECT id, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank
+    FROM chunks
+    WHERE embedding IS NOT NULL
+      AND $1::vector IS NOT NULL
+      #{String.trim(filters)}
     ORDER BY embedding <=> $1::vector
     LIMIT #{@candidate_pool}
   ),
@@ -97,14 +115,7 @@ defmodule RetrievalNode.Search.HybridQuery do
     ) AS rank
     FROM chunks
     WHERE tsv @@ websearch_to_tsquery('english', $2)
-      AND ($5::uuid IS NULL OR source_id = $5)
-      AND ($6::text IS NULL OR repo = $6)
-      AND ($7::text IS NULL OR lang = $7)
-      AND ($8::text IS NULL OR source_type = $8)
-      AND ($9::text IS NULL OR lower(metadata->>'author') = lower($9))
-      AND ($10::text IS NULL OR #{reviewed_by.("$10")})
-      AND ($11::text IS NULL OR lower(metadata->>'author') = lower($11)
-           OR #{reviewed_by.("$11")})
+      #{String.trim(filters)}
     ORDER BY ts_rank(tsv, websearch_to_tsquery('english', $2)) DESC
     LIMIT #{@candidate_pool}
   ),
@@ -133,7 +144,9 @@ defmodule RetrievalNode.Search.HybridQuery do
   (default #{@default_top_k}). `:source_type` is the DB enum string
   (`"git_repo"`/`"jira_project"`/`"drive_folder"`). `:author`/`:reviewer`
   match a pull request's GitHub login (case-insensitive), `:involves` either
-  one — so they only ever return PR chunks.
+  one — so they only ever return PR chunks. `:issue_type` (e.g. `"Bug"`),
+  `:assignee`/`:reporter` (part of a display name) and `:parent` (the parent
+  issue key, e.g. an epic) only ever return Jira chunks.
   """
   @spec search(opts) :: [result]
   def search(opts) do
@@ -153,7 +166,11 @@ defmodule RetrievalNode.Search.HybridQuery do
       opts[:source_type],
       opts[:author],
       opts[:reviewer],
-      opts[:involves]
+      opts[:involves],
+      opts[:issue_type],
+      opts[:assignee],
+      opts[:reporter],
+      opts[:parent]
     ]
 
     %Postgrex.Result{rows: rows} = Repo.query!(@sql, params)

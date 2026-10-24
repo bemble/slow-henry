@@ -188,6 +188,32 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
     refute Repo.get_by!(Source, name: "local").active
   end
 
+  test "Jira: adds a project by key and saves it", %{conn: conn, path: path} do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    render_async(view)
+
+    view |> form("#add-jira-0", %{project: " cloud "}) |> render_submit()
+    assert has_element?(view, "#jira-projects-form", "CLOUD")
+
+    [_, key] = Regex.run(~r/name="jira\[(r\d+)\]\[active\]"/, render(view))
+
+    view
+    |> form("#jira-projects-form", %{
+      "jira" => %{key => %{"active" => "true", "parent" => "true"}}
+    })
+    |> render_change()
+
+    view |> element("#review-button") |> render_click()
+    assert has_element?(view, "#review-plan", "Add Jira: CLOUD, then sync it")
+
+    view |> element("#save-button") |> render_click()
+
+    assert [%{identifier: "CLOUD", active: true, config: %{"parent" => true}}] =
+             Enum.filter(saved!(path), &(&1.source_type == :jira_project))
+
+    assert File.read!(path) =~ ~s([[jira]]\nproject = "CLOUD"\nparent = true)
+  end
+
   test "Drive: a pasted folder URL becomes its id", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)

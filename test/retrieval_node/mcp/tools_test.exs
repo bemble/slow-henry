@@ -195,6 +195,31 @@ defmodule RetrievalNode.MCP.ToolsTest do
       assert length(paths.(%{})) == 4
     end
 
+    test "issue_type / assignee / reporter / parent narrow Jira issues" do
+      source = Repo.insert!(%Source{source_type: :jira_project, name: "Jira: P", identifier: "P"})
+
+      issue = fn key, metadata ->
+        insert_chunk(source, :jira_project, "zorbleflux #{key}",
+          metadata: Map.put(metadata, "issue_key", key)
+        )
+      end
+
+      issue.("P-1", %{"issue_type" => "Bug", "assignee" => "Ada Lovelace", "parent" => "P-9"})
+      issue.("P-2", %{"issue_type" => "Story", "reporter" => "Ada Lovelace", "parent" => "P-9"})
+      issue.("P-3", %{"issue_type" => "Bug", "assignee" => "Alan Turing"})
+
+      keys = fn params ->
+        %{"results" => results} = ok(SemanticSearch, Map.put(params, :query, "zorbleflux"))
+        results |> Enum.map(& &1["metadata"]["issue_key"]) |> Enum.sort()
+      end
+
+      assert keys.(%{issue_type: "bug"}) == ["P-1", "P-3"]
+      assert keys.(%{assignee: "lovelace"}) == ["P-1"]
+      assert keys.(%{reporter: "ada"}) == ["P-2"]
+      assert keys.(%{parent: "p-9"}) == ["P-1", "P-2"]
+      assert keys.(%{issue_type: "Bug", parent: "P-9"}) == ["P-1"]
+    end
+
     test "an unknown source is rejected" do
       assert err(SemanticSearch, %{query: "x", source: "bogus"}) =~ "unknown source"
     end

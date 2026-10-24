@@ -2,7 +2,7 @@ defmodule RetrievalNode.SourcesFileTest do
   use RetrievalNode.DataCase, async: true
   use Oban.Testing, repo: RetrievalNode.Repo
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.SourcesFile
@@ -312,8 +312,46 @@ defmodule RetrievalNode.SourcesFileTest do
       assert_enqueued(worker: RepoSync, args: %{"source_id" => inactive.id})
       refute_enqueued(worker: RepoSync, args: %{"source_id" => renamed.id})
     end
+  end
 
-    test "leaves Jira sources alone" do
+  describe "[[jira]]" do
+    test "parses projects, active defaults to true" do
+      assert {:ok, [cloud, ops]} =
+               SourcesFile.parse(%{
+                 "jira" => [%{"project" => "CLOUD"}, %{"project" => "OPS_2", "active" => false}]
+               })
+
+      assert cloud == %{
+               source_type: :jira_project,
+               identifier: "CLOUD",
+               name: "Jira: CLOUD",
+               active: true,
+               config: %{}
+             }
+
+      assert %{identifier: "OPS_2", active: false} = ops
+    end
+
+    test "assignee, reporter and parent are stored only when on" do
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{
+                 "jira" => [
+                   %{
+                     "project" => "CLOUD",
+                     "assignee" => true,
+                     "reporter" => false,
+                     "parent" => true
+                   }
+                 ]
+               })
+
+      assert config == %{"assignee" => true, "parent" => true}
+
+      assert {:error, "[[jira]] #1: `active`, `assignee`" <> _} =
+               SourcesFile.parse(%{"jira" => [%{"project" => "X", "parent" => "yes"}]})
+    end
+
+    test "changing an option queues a full pass" do
       jira =
         Repo.insert!(%Source{
           source_type: :jira_project,
@@ -321,8 +359,33 @@ defmodule RetrievalNode.SourcesFileTest do
           identifier: "CLOUD"
         })
 
-      assert {:ok, []} = SourcesFile.apply([])
-      assert %{active: true} = Repo.get!(Source, jira.id)
+      {:ok, entries} = SourcesFile.parse(%{"jira" => [%{"project" => "CLOUD", "parent" => true}]})
+      assert {:ok, [{:update, _, _}]} = SourcesFile.apply(entries)
+
+      assert %{config: %{"parent" => true}} = Repo.get!(Source, jira.id)
+      assert_enqueued(worker: JiraSync, args: %{"source_id" => jira.id, "mode" => "full"})
+    end
+
+    test "rejects bad projects with their position" do
+      bad = fn item -> SourcesFile.parse(%{"jira" => [%{"project" => "OK"}, item]}) end
+
+      assert {:error, "[[jira]] #2: invalid project key" <> _} = bad.(%{"project" => "cloud"})
+      assert {:error, "[[jira]] #2: `project`" <> _} = bad.(%{})
+      assert {:error, "[[jira]] #2: unknown key(s) jql"} = bad.(%{"project" => "X", "jql" => ""})
+      assert {:error, "[[jira]] #2: `active`" <> _} = bad.(%{"project" => "X", "active" => 1})
+      assert {:error, "duplicate project \"OK\""} = bad.(%{"project" => "OK"})
+      assert {:error, "`jira` must be" <> _} = SourcesFile.parse(%{"jira" => %{}})
+    end
+
+    test "adding a project queues a Jira sync; removing it deactivates it" do
+      {:ok, entries} = SourcesFile.parse(%{"jira" => [%{"project" => "CLOUD"}]})
+      assert {:ok, [{:add, _}]} = SourcesFile.apply(entries)
+
+      jira = Repo.get_by!(Source, source_type: :jira_project, identifier: "CLOUD")
+      assert_enqueued(worker: JiraSync, args: %{"source_id" => jira.id})
+
+      assert {:ok, [{:deactivate, _}]} = SourcesFile.apply([])
+      assert %{active: false} = Repo.get!(Source, jira.id)
     end
   end
 
@@ -339,6 +402,10 @@ defmodule RetrievalNode.SourcesFileTest do
               "exclude" => ["docs/*", "!docs/\"quoted\""],
               "pull_requests" => true
             })
+          ],
+          "jira" => [
+            %{"project" => "CLOUD", "assignee" => true, "parent" => true},
+            %{"project" => "OPS", "active" => false}
           ],
           "drive" => %{
             "my_drive" => false,
