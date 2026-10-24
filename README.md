@@ -299,17 +299,13 @@ One-time setup:
 3. Create an OAuth client ID of type **Desktop app**, and set
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 4. Open `/connections` in the UI and click **Connect Google Drive**. Google redirects
-   back to `/google/callback` on the server's URL (`http://localhost:<PORT>`, or
-   `PHX_HOST` in prod), and the refresh token is stored in
+   back to `/google/callback`, and the refresh token is stored in
    `DATA_DIR/secrets.toml` (mode 0600, never displayed) and used from then on,
    across restarts. **Disconnect** on the same page forgets it.
    `GOOGLE_REFRESH_TOKEN`, if set, overrides the stored token.
 
-When the server runs on another machine than the browser, either keep the Desktop
-client and paste the page Google's `localhost` redirect fails to load into the form
-on `/connections`, or set `PHX_HOST` and use a **Web application** client with
-`http://<PHX_HOST>:<PORT>/google/callback` as an authorized redirect URI. Google only
-accepts that for a real domain name (not an IP) served over HTTPS, `localhost` aside.
+When the server runs on another machine than the browser, Google's redirect to
+`localhost` fails to load: paste that page's URL into the form on `/connections`.
 
 ### GitHub
 
