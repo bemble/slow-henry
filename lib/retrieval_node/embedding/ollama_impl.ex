@@ -75,7 +75,7 @@ defmodule RetrievalNode.Embedding.OllamaImpl do
   end
 
   @doc """
-  Probes the server for the Connections page: version, whether the
+  Probes the server for the Settings page: version, whether the
   configured model is pulled, and a one-text embedding round trip. Never
   raises.
   """

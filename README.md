@@ -19,8 +19,9 @@ exposed to clients as **MCP tools** over HTTP.
   resolved Jira issues are chunked and embedded into a single store, so one
   query ranks across all of them.
 - **Hybrid retrieval:** pgvector cosine similarity (HNSW) + Postgres full-text
-  search (GIN), fused with RRF (k=60). Optional `source`/`repo`/`lang` filters
-  are applied *before* ranking so filtered searches stay accurate.
+  search (GIN), fused with RRF (k=60). Optional filters (`source`, `repo`,
+  `lang`, PR people, Jira type / people / parent) are applied *before* ranking
+  so filtered searches stay accurate.
 - **Incremental ingestion:** per-source Oban sync jobs stage changed content in
   `pending_chunks` and advance a watermark; one `SourceOwner` process per source
   chunks, embeds and upserts it. Re-runs are no-ops. Lockfiles, minified
@@ -37,14 +38,15 @@ exposed to clients as **MCP tools** over HTTP.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;
-  - `/sources/edit` — pick the GitHub repos and the Google Drive scope to
-    index (writes `sources.toml`);
+  - `/sources/edit` — pick the GitHub repos, the Jira projects and the Google
+    Drive scope to index (writes `sources.toml`);
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
-  - `/connections` — the app version, how to add the MCP server to a client
-    (Claude Code, `.mcp.json`, VS Code…), embedding backend status (Ollama
-    reachability, model, share of the index on the current embedding setup),
-    and GitHub / Google Drive authorization.
+  - `/settings` — the app version and one tab per service: GitHub, Jira
+    and Google Drive authorization, then **AI**: how to add the MCP server to
+    a client (Claude Code, `.mcp.json`, VS Code…) and the embedding backend
+    status (Ollama reachability, model, share of the index on the current
+    embedding setup).
 
 ## Stack
 
@@ -118,13 +120,13 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `OLLAMA_ENDPOINT` | Ollama server for embeddings, e.g. `http://localhost:11434` (see [Embeddings](#embeddings)). Unset: in-process CPU model. |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
-| `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/connections` page. |
+| `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/settings` page. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for merged PRs and private clones (see below). |
-| `GITHUB_TOKEN` | Optional: a token (e.g. a fine-grained PAT) that overrides the one stored by `/connections`. |
+| `GITHUB_TOKEN` | Optional: a token (e.g. a fine-grained PAT) that overrides the one stored by `/settings`. |
 | `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
 | `SOURCES_WATCH_INTERVAL` | Seconds between checks of the sources file for changes (default 30). |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Optional: Jira credentials that override the ones stored by `/connections` (all three). |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Optional: Jira credentials that override the ones stored by `/settings` (all three). |
 | `GIT_MIRROR_ROOT` | Prod: where the bare git mirrors live. |
 | `PORT` | HTTP port (default 4000). |
 | `SECRET_KEY_BASE` | Prod only, required: signs cookies (`mix phx.gen.secret`). |
@@ -157,7 +159,7 @@ else in [Configuration](#configuration) applies as is.
   instead; to keep that file, copy it into the volume once:
   `docker compose cp sources.toml app:/var/lib/retrieval_node/sources.toml`.
 - The `app-data` volume holds `sources.toml`, `secrets.toml` (OAuth tokens
-  from `/connections`), the git mirrors, and the embedding model (~1 GB). The model
+  from `/settings`), the git mirrors, and the embedding model (~1 GB). The model
   is downloaded at first boot, so the container reports healthy (`/healthz`)
   only after a few minutes. With `OLLAMA_ENDPOINT` set, nothing is downloaded.
   The compose file has a commented-out `ollama` service.
@@ -208,7 +210,7 @@ queries with `search_query: `, as the model was trained.
 **Switching setups.** Vectors from different backends, models or prefixes
 don't mix well in one index. Every chunk records the setup that embedded it
 (`chunks.embedding_profile`, e.g. `ollama:nomic-embed-text:nomic-prefixes:384`);
-the Connections page shows how much of the index is on the current one, and
+the Settings page shows how much of the index is on the current one, and
 new or changed files are always embedded with it. To redo the rest:
 
 ```sh
@@ -257,8 +259,9 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), Jira projects are added by key, `exclude` patterns and Drive ids are plain text fields (a pasted Drive
-folder URL is turned into its id), and a review step shows what will change
+URL), Jira projects are added by key with their options, `exclude` patterns
+and Drive ids are plain text fields (a pasted Drive folder URL is turned into
+its id), and a review step shows what will change
 before saving. Saving rewrites the file without its comments, and is refused
 if the file changed on disk since the page was opened.
 
@@ -309,16 +312,36 @@ case-insensitive) and `parent` (an epic's key: its children); `get_document`
 returns an issue's text by its key. Issues are synced hourly, from the last
 resolution date seen; changing an option re-syncs the whole project.
 
-Credentials: create an **API token** at
-[id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-(it reads what your account can read), then enter the site
-(`https://my-site.atlassian.net`), your Atlassian email and the token on
-`/connections`. They are checked against Jira, then stored in
-`DATA_DIR/secrets.toml` (the token is never displayed); **Disconnect** forgets
-them. A scoped token (read-only, `read:jira-work`) works too, with
-`https://api.atlassian.com/ex/jira/<cloudId>` as the site.
+Credentials: an Atlassian **API token**, read with your account's access.
+
+1. At [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens),
+   choose **Create API token with scopes** (recommended: read-only), app
+   **Jira**, with these scopes:
+
+   | Scope | Used for |
+   | --- | --- |
+   | `read:jira-work` | searching the issues and reading their fields |
+   | `read:jira-user` | `/rest/api/3/myself`, the check on `/settings` |
+   | `read:me`, `read:account` | your account's profile |
+
+   A classic token (**Create API token**, no scopes) works too, with
+   everything your account can do.
+2. On `/settings`, enter the site (`https://my-site.atlassian.net`; a
+   pasted Jira URL is fine), your Atlassian account's email and the token.
+   They are checked against Jira, then stored in `DATA_DIR/secrets.toml` (the
+   token is never displayed); **Disconnect** forgets them.
+
+Atlassian only accepts a token with scopes through
+`https://api.atlassian.com/ex/jira/<cloudId>`, not the site: when the site
+refuses the token, the check retries there by itself (the cloud id comes from
+the site) and stores that URL, keeping the site for links to issues. A refused
+token shows Jira's reason (e.g. `scope does not match`).
+
 `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`, when all set, override the
-stored ones. Without credentials, Jira syncs are cancelled.
+stored ones; with a token with scopes, `JIRA_BASE_URL` must then be the
+`https://api.atlassian.com/ex/jira/<cloudId>` URL (the site's
+`/_edge/tenant_info` gives the cloud id). Without credentials, Jira syncs are
+cancelled.
 
 ### Google Drive
 
@@ -347,14 +370,14 @@ One-time setup:
    `drive.labels.readonly`.
 3. Create an OAuth client ID of type **Desktop app**, and set
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
-4. Open `/connections` in the UI and click **Connect Google Drive**. Google redirects
+4. Open `/settings` in the UI and click **Connect Google Drive**. Google redirects
    back to `/google/callback`, and the refresh token is stored in
    `DATA_DIR/secrets.toml` (mode 0600, never displayed) and used from then on,
    across restarts. **Disconnect** on the same page forgets it.
    `GOOGLE_REFRESH_TOKEN`, if set, overrides the stored token.
 
 When the server runs on another machine than the browser, Google's redirect to
-`localhost` fails to load: paste that page's URL into the form on `/connections`.
+`localhost` fails to load: paste that page's URL into the form on `/settings`.
 
 ### GitHub
 
@@ -375,7 +398,7 @@ One-time setup:
    an organization you don't own, make it installable by **Any account**.
 4. Install the App on the organization(s) or account holding the repos, for
    all repos or a selection.
-5. Open `/connections` and click **Connect GitHub**: enter the code shown at
+5. Open `/settings` and click **Connect GitHub**: enter the code shown at
    github.com/login/device. The refresh token goes to `DATA_DIR/secrets.toml`;
    GitHub rotates it at each refresh (access tokens last 8 hours, refresh
    tokens 6 months when unused). **Disconnect** forgets it.

@@ -48,7 +48,7 @@ defmodule RetrievalNode.SourcesFile do
   with `save/3` (`encode/1`, which does not keep comments), then lets the
   watcher apply it.
 
-  Jira projects are synced with the credentials entered on the Connections
+  Jira projects are synced with the credentials entered on the Settings
   page (`Jira.Credentials`).
   """
 

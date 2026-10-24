@@ -2,7 +2,7 @@ defmodule RetrievalNode.Google.OAuth do
   @moduledoc """
   OAuth 2.0 for a Google "Desktop app" client, read-only Drive + Drive Labels.
 
-  One-time consent, from the UI's Connections page (`RetrievalNodeWeb.ConnectionsLive`),
+  One-time consent, from the UI's Settings page (`RetrievalNodeWeb.SettingsLive`),
   yields a **refresh token**; from then on `access_token/0` trades it for
   short-lived access tokens, cached in `:persistent_term` until a minute
   before expiry. Desktop clients accept any loopback redirect, so the redirect
@@ -15,7 +15,7 @@ defmodule RetrievalNode.Google.OAuth do
         client_secret: "...",    # GOOGLE_CLIENT_SECRET
         refresh_token: "..."     # GOOGLE_REFRESH_TOKEN (optional override)
 
-  The refresh token obtained on the Connections page is stored in
+  The refresh token obtained on the Settings page is stored in
   `Secrets` (`google_refresh_token` in `<data dir>/secrets.toml`).
   `GOOGLE_REFRESH_TOKEN`, when set, takes precedence over it.
 
@@ -122,7 +122,7 @@ defmodule RetrievalNode.Google.OAuth do
   def invalidate, do: :persistent_term.erase(@cache_key)
 
   @doc """
-  Stores `refresh` (from a consent on the Connections page) in `Secrets`;
+  Stores `refresh` (from a consent on the Settings page) in `Secrets`;
   it is used right away and after restarts.
   """
   def store_refresh_token(refresh) when is_binary(refresh) do

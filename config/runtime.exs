@@ -17,7 +17,7 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 # Google OAuth for the Drive source (see RetrievalNode.Google.OAuth and
-# the UI's Connections page at /connections, stored by RetrievalNode.Secrets;
+# the UI's Settings page at /settings, stored by RetrievalNode.Secrets;
 # GOOGLE_REFRESH_TOKEN overrides it). Read in every env but test, which stubs it.
 if config_env() != :test do
   config :retrieval_node, :google,
@@ -41,7 +41,7 @@ if config_env() != :test do
 end
 
 # GitHub App for merged PRs and private clones (RetrievalNode.GitHub.OAuth):
-# connected from the Connections page, its refresh token stored by
+# connected from the Settings page, its refresh token stored by
 # RetrievalNode.Secrets. GITHUB_TOKEN (e.g. a fine-grained PAT) overrides it.
 if config_env() != :test do
   config :retrieval_node, :github,
@@ -51,7 +51,7 @@ if config_env() != :test do
 end
 
 # Jira Cloud API token for the [[jira]] sources (RetrievalNode.Jira.Credentials):
-# entered on the Connections page and stored by RetrievalNode.Secrets. These
+# entered on the Settings page and stored by RetrievalNode.Secrets. These
 # three, when all set, override it.
 if config_env() != :test do
   config :retrieval_node, :jira,

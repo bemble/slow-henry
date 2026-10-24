@@ -590,7 +590,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             Resolved issues (status category Done) of each project, by its key: summary,
             description, type and status, plus the fields checked below.
             <span :if={!@jira_connected}>
-              <.link navigate={~p"/connections"} class="link">Connect Jira</.link>
+              <.link navigate={~p"/settings"} class="link">Connect Jira</.link>
               first: projects don't sync without an API token.
             </span>
           </p>
@@ -682,7 +682,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   defp github_picker(%{github: :not_connected} = assigns) do
     ~H"""
     <p id="github-not-connected" class="text-sm opacity-70">
-      <.link navigate={~p"/connections"} class="link">Connect GitHub</.link>
+      <.link navigate={~p"/settings"} class="link">Connect GitHub</.link>
       to pick repositories from a list.
     </p>
     """

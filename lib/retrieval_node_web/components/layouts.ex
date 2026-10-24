@@ -33,7 +33,7 @@ defmodule RetrievalNodeWeb.Layouts do
 
   attr :active, :atom,
     default: nil,
-    doc: "the nav entry to highlight (:sources | :search | :connections)"
+    doc: "the nav entry to highlight (:sources | :search | :settings)"
 
   slot :inner_block, required: true
 
@@ -51,24 +51,30 @@ defmodule RetrievalNodeWeb.Layouts do
             <.link
               navigate={~p"/"}
               class={["btn btn-ghost btn-sm", @active == :sources && "btn-active"]}
+              title="Sources"
             >
-              Sources
+              <.icon name="hero-circle-stack" class="size-4" />
+              <span class="hidden sm:inline">Sources</span>
             </.link>
           </li>
           <li>
             <.link
               navigate={~p"/search"}
               class={["btn btn-ghost btn-sm", @active == :search && "btn-active"]}
+              title="Search"
             >
-              Search
+              <.icon name="hero-magnifying-glass" class="size-4" />
+              <span class="hidden sm:inline">Search</span>
             </.link>
           </li>
           <li>
             <.link
-              navigate={~p"/connections"}
-              class={["btn btn-ghost btn-sm", @active == :connections && "btn-active"]}
+              navigate={~p"/settings"}
+              class={["btn btn-ghost btn-sm", @active == :settings && "btn-active"]}
+              title="Settings"
             >
-              Connections
+              <.icon name="hero-cog-6-tooth" class="size-4" />
+              <span class="hidden sm:inline">Settings</span>
             </.link>
           </li>
           <li>

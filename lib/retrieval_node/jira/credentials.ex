@@ -3,7 +3,7 @@ defmodule RetrievalNode.Jira.Credentials do
   Jira Cloud credentials: a site URL, an Atlassian account email and an API
   token (id.atlassian.com → Security → API tokens), sent as HTTP Basic auth.
 
-  Entered on the UI's Connections page (`RetrievalNodeWeb.ConnectionsLive`),
+  Entered on the UI's Settings page (`RetrievalNodeWeb.SettingsLive`),
   checked against Jira, then stored in `Secrets` (`jira_base_url`,
   `jira_email`, `jira_api_token` in `<data dir>/secrets.toml`); the token is
   never displayed. The environment overrides them as a set
@@ -15,7 +15,7 @@ defmodule RetrievalNode.Jira.Credentials do
         api_token: "..."                             # JIRA_API_TOKEN
 
   A scoped API token goes through `https://api.atlassian.com/ex/jira/<cloudId>`
-  instead of the site URL; both work as `base_url`. The Connections page
+  instead of the site URL; both work as `base_url`. The Settings page
   switches to it by itself when the site refuses a token
   (`RetrievalNode.Ingest.Jira.connect/1`), keeping the site as `site_url`
   (`jira_site_url`) for links to issues.
