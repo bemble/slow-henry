@@ -29,9 +29,22 @@ pull_requests = true   # merged PRs: description, comments, reviews (default fal
 # plus the shared drives / folders listed in `include` (ids from their URLs,
 # e.g. drive.google.com/drive/folders/<ID>; folders shared with you are only
 # crawled when listed there).
-# Only docs without a Classification label, or classified Public / Internal,
-# are indexed. Authorize once from the UI's Connections page (/connections).
+# Docs are then filtered by their Drive labels: every `include_labels` filter
+# must pass. A doc passes one when the label's selected choice(s) are all in
+# `values`, or when it doesn't carry the label and `unlabeled = true`.
+# Without `include_labels`, the filter is the "Classification" one below;
+# `include_labels = []` indexes every doc in scope.
+# Authorize once from the UI's Connections page (/connections).
 [drive]
 my_drive = true
 shared_with_me = false
 include = ["0AbCdEfGhIjKlMnOpQ", "1aBcDeFgHiJkLmNoPqRsTuVwXyZ"]
+
+[[drive.include_labels]]
+label = "Classification"
+values = ["Public", "Internal"]
+unlabeled = true
+
+# [[drive.include_labels]]
+# label = "Team"
+# values = ["Cloud"]

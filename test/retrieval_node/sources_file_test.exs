@@ -167,6 +167,65 @@ defmodule RetrievalNode.SourcesFileTest do
                SourcesFile.parse(%{"drive" => %{"shared_with_me" => "yes"}})
     end
 
+    test "include_labels defaults to the Classification filter, stored only when changed" do
+      default = %{
+        "label" => "Classification",
+        "values" => ["Public", "Internal"],
+        "unlabeled" => true
+      }
+
+      assert {:ok, [%{config: config}]} = SourcesFile.parse(%{"drive" => %{}})
+      refute Map.has_key?(config, "include_labels")
+
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{"drive" => %{"include_labels" => [default]}})
+
+      refute Map.has_key?(config, "include_labels")
+
+      assert {:ok, [%{config: %{"include_labels" => []}}]} =
+               SourcesFile.parse(%{"drive" => %{"include_labels" => []}})
+
+      assert {:ok, [%{config: %{"include_labels" => filters}}]} =
+               SourcesFile.parse(%{
+                 "drive" => %{
+                   "include_labels" => [default, %{"label" => "Team", "values" => ["Cloud"]}]
+                 }
+               })
+
+      assert filters == [
+               default,
+               %{"label" => "Team", "values" => ["Cloud"], "unlabeled" => false}
+             ]
+    end
+
+    test "rejects bad label filters" do
+      bad = fn filters -> SourcesFile.parse(%{"drive" => %{"include_labels" => filters}}) end
+
+      assert {:error, "[drive]: `include_labels` must be an array of tables"} = bad.("x")
+      assert {:error, "[drive]: include_labels #1: must be a table"} = bad.(["x"])
+
+      assert {:error, "[drive]: include_labels #1: `label` must be a non-empty string"} =
+               bad.([%{"label" => " ", "values" => ["A"]}])
+
+      assert {:error, "[drive]: include_labels #1: `values` must be a list of choice names"} =
+               bad.([%{"label" => "A", "values" => "B"}])
+
+      assert {:error, "[drive]: include_labels #1: `unlabeled` must be true or false"} =
+               bad.([%{"label" => "A", "unlabeled" => "yes"}])
+
+      assert {:error, "[drive]: include_labels #1: matches no doc" <> _} =
+               bad.([%{"label" => "A"}])
+
+      assert {:error, "[drive]: include_labels #1: unknown key(s) choices"} =
+               bad.([%{"label" => "A", "choices" => ["B"]}])
+
+      assert {:error, "[drive]: duplicate label in `include_labels`"} =
+               bad.([
+                 %{"label" => "A", "values" => ["B"]},
+                 %{"label" => "a", "unlabeled" => true}
+               ])
+    end
+
     test "rejects bad drive tables and unknown sections" do
       assert {:error, "[drive]: unknown key(s) folders"} =
                SourcesFile.parse(%{"drive" => %{"folders" => []}})
@@ -281,7 +340,15 @@ defmodule RetrievalNode.SourcesFileTest do
               "pull_requests" => true
             })
           ],
-          "drive" => %{"my_drive" => false, "shared_with_me" => true, "include" => ["0AbC"]}
+          "drive" => %{
+            "my_drive" => false,
+            "shared_with_me" => true,
+            "include" => ["0AbC"],
+            "include_labels" => [
+              %{"label" => "Sensitivity", "values" => ["Open"]},
+              %{"label" => "Team", "values" => [], "unlabeled" => true}
+            ]
+          }
         })
 
       entries
@@ -294,6 +361,21 @@ defmodule RetrievalNode.SourcesFileTest do
 
       assert {:ok, doc} = Toml.decode(SourcesFile.encode([]))
       assert SourcesFile.parse(doc) == {:ok, []}
+    end
+
+    test "Drive label filters are written even when they are the default" do
+      {:ok, [drive]} = SourcesFile.parse(%{"drive" => %{}})
+      body = SourcesFile.encode([drive])
+
+      assert body =~ """
+             [[drive.include_labels]]
+             label = "Classification"
+             values = ["Public", "Internal"]
+             unlabeled = true
+             """
+
+      assert {:ok, doc} = Toml.decode(body)
+      assert SourcesFile.parse(doc) == {:ok, [drive]}
     end
 
     test "only non-default git options are written" do

@@ -291,8 +291,21 @@ registered with `mix rn.seed` from its environment variables.
 ### Google Drive
 
 Only Google Docs are indexed (exported as markdown, images stripped), and only
-those with **no Classification label, or classified Public / Internal**. If the
-label can't be read, nothing is indexed.
+those passing every **label filter** of `[[drive.include_labels]]` in
+`sources.toml` (also editable on `/sources/edit`). A doc passes a filter when
+the label's selected choices are all in `values`, or when it doesn't carry the
+label and `unlabeled = true`. The default is **no Classification label, or
+classified Public / Internal**:
+
+```toml
+[[drive.include_labels]]
+label = "Classification"
+values = ["Public", "Internal"]
+unlabeled = true
+```
+
+`include_labels = []` indexes every doc in scope. If a filtered label or one of
+its values can't be found, nothing is indexed.
 
 One-time setup:
 

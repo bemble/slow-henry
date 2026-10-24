@@ -7,7 +7,10 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
   What is indexed is decided by `Ingest.DrivePolicy` from the source config
   (written by `RetrievalNode.SourcesFile` from `[drive]` in sources.toml):
 
-      %{"my_drive" => true, "shared_with_me" => true, "include" => ["<drive or folder id>", ...]}
+      %{"my_drive" => true, "shared_with_me" => true, "include" => ["<drive or folder id>", ...],
+        "include_labels" => [%{"label" => "Classification", "values" => ["Public"], "unlabeled" => true}]}
+
+  (`include_labels` only when it differs from the default).
 
   Two modes:
 
@@ -23,7 +26,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
       re-evaluates each touched file: export when indexable and newer, delete
       when it was indexed and no longer is.
 
-  Fail closed: if the Classification label can't be read, nothing is staged.
+  Fail closed: if a filtered label can't be read, nothing is staged.
   """
   use Oban.Worker,
     queue: :sync,
@@ -53,11 +56,13 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
     source = Repo.get!(Source, source_id)
     state = get_or_create_sync_state(source_id)
 
-    with {:ok, classification} <- Drive.classification_label(),
-         {:ok, scope} <- resolve_scope(source.config || %{}) do
+    config = source.config || %{}
+
+    with {:ok, filters} <- Drive.label_filters(config),
+         {:ok, scope} <- resolve_scope(config) do
       if full?(args, state),
-        do: full(source, state, classification, scope),
-        else: changes(source, state, classification, scope)
+        do: full(source, state, filters, scope),
+        else: changes(source, state, filters, scope)
     end
   catch
     # Raised from the memoized parent lookup: abort rather than guess scope.
@@ -72,14 +77,12 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
 
   # --- full ---
 
-  defp full(source, state, classification, scope) do
+  defp full(source, state, filters, scope) do
     with {:ok, state} <- ensure_cursor(state),
-         {:ok, files} <- scope_docs(scope, classification.label_id) do
+         {:ok, files} <- scope_docs(scope, label_ids(filters)) do
       allowed =
         files
-        |> Enum.filter(
-          &(DrivePolicy.doc?(&1) and DrivePolicy.classification_allowed?(&1, classification))
-        )
+        |> Enum.filter(&(DrivePolicy.doc?(&1) and DrivePolicy.labels_allowed?(&1, filters)))
         |> Enum.uniq_by(& &1["id"])
 
       indexed = indexed_docs(source.id)
@@ -114,15 +117,18 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
     end
   end
 
-  defp scope_docs(scope, label_id) do
+  # includeLabels: every filtered label, so the policy sees their values.
+  defp label_ids(filters), do: filters |> Enum.map(& &1.label_id) |> Enum.uniq() |> Enum.join(",")
+
+  defp scope_docs(scope, label_ids) do
     listings =
       [
-        if(scope.my_drive, do: fn -> Drive.my_drive_docs(label_id) end),
-        if(scope.shared_with_me, do: fn -> Drive.shared_with_me_docs(label_id) end)
+        if(scope.my_drive, do: fn -> Drive.my_drive_docs(label_ids) end),
+        if(scope.shared_with_me, do: fn -> Drive.shared_with_me_docs(label_ids) end)
       ] ++
-        Enum.map(scope.drives, fn id -> fn -> Drive.shared_drive_docs(id, label_id) end end) ++
+        Enum.map(scope.drives, fn id -> fn -> Drive.shared_drive_docs(id, label_ids) end end) ++
         Enum.map(scope.folders, fn id ->
-          fn -> folder_docs([id], label_id, %{}, []) end
+          fn -> folder_docs([id], label_ids, %{}, []) end
         end)
 
     listings
@@ -138,18 +144,18 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
   # Breadth-first walk of a folder tree; `seen` guards against shortcut loops.
   # `seen` is a plain map (id => true): a MapSet seeded with MapSet.new() trips
   # Dialyzer's opaque-type checks on OTP 29.
-  defp folder_docs([], _label_id, _seen, acc), do: {:ok, acc}
+  defp folder_docs([], _label_ids, _seen, acc), do: {:ok, acc}
 
-  defp folder_docs([id | rest], label_id, seen, acc) do
+  defp folder_docs([id | rest], label_ids, seen, acc) do
     if Map.has_key?(seen, id) do
-      folder_docs(rest, label_id, seen, acc)
+      folder_docs(rest, label_ids, seen, acc)
     else
-      with {:ok, children} <- Drive.folder_children(id, label_id) do
+      with {:ok, children} <- Drive.folder_children(id, label_ids) do
         {folders, docs} = Enum.split_with(children, &(&1["mimeType"] == Drive.folder_mime()))
 
         folder_docs(
           rest ++ Enum.map(folders, & &1["id"]),
-          label_id,
+          label_ids,
           Map.put(seen, id, true),
           acc ++ docs
         )
@@ -159,16 +165,16 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
 
   # --- changes ---
 
-  defp changes(source, state, classification, scope) do
+  defp changes(source, state, filters, scope) do
     with {:ok, %{changes: changes, cursor: new_cursor}} <-
-           Drive.changes(state.cursor["start_page_token"], classification.label_id) do
+           Drive.changes(state.cursor["start_page_token"], label_ids(filters)) do
       indexed = indexed_docs(source.id)
       parents_of = memoized_parents()
 
       # The feed can list a file several times; only its latest state matters.
       latest = changes |> Enum.reverse() |> Enum.uniq_by(& &1.file_id)
 
-      decide = &decide(&1, indexed, scope, classification, parents_of)
+      decide = &decide(&1, indexed, scope, filters, parents_of)
       decisions = Enum.map(latest, decide)
       export = for {:export, file} <- decisions, do: file
       delete = for {:delete, id} <- decisions, do: id
@@ -186,10 +192,10 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
 
   # Export when indexable and newer than what is indexed; delete when it was
   # indexed and no longer is (removed, trashed, moved out, re-classified).
-  defp decide(change, indexed, scope, classification, parents_of) do
+  defp decide(change, indexed, scope, filters, parents_of) do
     cond do
       not change.removed and
-          DrivePolicy.indexable?(change.file, scope, classification, parents_of) ->
+          DrivePolicy.indexable?(change.file, scope, filters, parents_of) ->
         if stale?(change.file, indexed), do: {:export, change.file}, else: :skip
 
       Map.has_key?(indexed, change.file_id) ->

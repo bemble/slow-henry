@@ -14,7 +14,10 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
           %{
             "id" => "fld",
             "selectionOptions" => %{
-              "choices" => [%{"id" => "pub", "properties" => %{"displayName" => "Public"}}]
+              "choices" => [
+                %{"id" => "pub", "properties" => %{"displayName" => "Public"}},
+                %{"id" => "int", "properties" => %{"displayName" => "Internal"}}
+              ]
             }
           }
         ]
@@ -94,7 +97,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     html = render(view)
     refute html =~ "rtok-123"
     assert html =~ "The token is stored"
-    assert html =~ "Classification label found"
+    assert html =~ "Classification: Public / Internal / no label"
     assert RetrievalNode.Secrets.get("google_refresh_token") == "rtok-123"
 
     {:ok, view, html} = live(conn, ~p"/connections")
