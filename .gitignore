@@ -55,3 +55,6 @@ retrieval_node-*.tar
 # tree-sitter grammar cache staged into the release by scripts/build_arm64.sh
 # and the Dockerfile.
 /rel/overlays/grammar-cache/
+
+# A pre-data-dir sources.toml at the root (private repo names).
+/sources.toml

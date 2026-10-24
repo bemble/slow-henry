@@ -6,7 +6,7 @@ defmodule RetrievalNode.SourcesFile do
   overrides the path); `sources.example.toml` is the template.
 
       [[git]]
-      name = "adr"                                  # mirror slug + MCP `repo` filter
+      name = "adr"                                  # display name; sets the mirror slug at creation
       url = "https://github.com/my-org/adr.git"     # clone URL (the source identity)
       # active = false                              # keep indexed chunks, stop syncing
       # exclude = ["docs/*", "!docs/adr"]           # .gitignore-style (Ingest.PathFilter)
@@ -34,12 +34,19 @@ defmodule RetrievalNode.SourcesFile do
   no `include_labels`, the filter is the one above; `include_labels = []`
   filters nothing.
 
+  A git `name` becomes the mirror directory and the `repo` slug on chunks (and
+  in MCP `list_repos`) when the source is created. Renaming a source later only
+  changes its display name: the original slug is pinned in
+  `config["mirror_slug"]`, which the file never sets nor clears. A new entry may
+  not reuse any existing git source's slug (a changed url is a new source, so it
+  needs a new name).
+
   `apply/1` aligns the `sources` table with the file — at boot and on every
   change by `SourcesFile.Watcher`, or by hand with `mix rn.sources`:
 
     * an entry with no matching source is **added** and gets its first sync;
-    * a known one whose name, `active` flag or Drive scope differs is
-      **updated**; re-activation, or a changed Drive scope, triggers a sync;
+    * a known one whose name, `active` flag or options differ is
+      **updated**; re-activation, or a changed scope, triggers a sync;
     * a git, Jira or Drive source in the database but no longer in the file is
       **deactivated** — never deleted, so its chunks stay searchable and
       putting it back resumes from its cursor.
@@ -253,8 +260,11 @@ defmodule RetrievalNode.SourcesFile do
     end
   end
 
-  @doc "What `apply/1` would do, without writing anything."
-  @spec plan([entry()]) :: [change()]
+  @doc """
+  What `apply/1` would do, without writing anything. Errors when an added
+  git entry's name is already the mirror slug of an existing git source.
+  """
+  @spec plan([entry()]) :: {:ok, [change()]} | {:error, String.t()}
   def plan(entries) do
     existing = Repo.all(from s in Source, where: s.source_type in ^@managed_types)
     by_key = Map.new(existing, &{{&1.source_type, &1.identifier}, &1})
@@ -268,7 +278,9 @@ defmodule RetrievalNode.SourcesFile do
           not MapSet.member?(wanted, {s.source_type, s.identifier}),
           do: {:deactivate, s}
 
-    planned ++ retired
+    with :ok <- check_slugs(planned, existing) do
+      {:ok, planned ++ retired}
+    end
   end
 
   defp plan_entry(entry, by_key) do
@@ -279,28 +291,61 @@ defmodule RetrievalNode.SourcesFile do
   end
 
   defp same?(s, e),
-    do: s.name == e.name and s.active == e.active and (s.config || %{}) == e.config
+    do: s.name == e.name and s.active == e.active and file_config(s.config) == e.config
+
+  # The part of a source's config the file owns: everything but the pinned slug.
+  defp file_config(config), do: Map.delete(config || %{}, "mirror_slug")
+
+  defp check_slugs(planned, existing) do
+    by_slug =
+      for s <- existing, s.source_type == :git_repo, into: %{}, do: {Source.mirror_slug(s), s}
+
+    Enum.find_value(planned, :ok, fn
+      {:add, %{source_type: :git_repo} = e} -> slug_conflict(e, Map.get(by_slug, e.name))
+      _ -> nil
+    end)
+  end
+
+  defp slug_conflict(_entry, nil), do: nil
+
+  defp slug_conflict(e, s) do
+    state = if s.active, do: "active", else: "inactive"
+
+    {:error,
+     "name #{inspect(e.name)} is already the mirror slug of #{s.identifier} " <>
+       "(#{state}); a changed url is a new source, so give it a new name"}
+  end
 
   @doc """
-  Applies `plan/1` in one transaction, then enqueues a sync for every added or
-  re-activated source (and a full Drive pass when its scope changed).
-  Requires a running Oban instance.
+  The slug an update pins into `config["mirror_slug"]`, or `nil` when the name
+  is unchanged, a slug is already pinned, or the source is not a git repo.
+  """
+  @spec pinned_slug(Source.t(), entry()) :: String.t() | nil
+  def pinned_slug(%Source{source_type: :git_repo} = s, e) do
+    if s.name != e.name and is_nil(Map.get(s.config || %{}, "mirror_slug")),
+      do: Source.mirror_slug(s)
+  end
+
+  def pinned_slug(%Source{}, _e), do: nil
+
+  @doc """
+  Applies `plan/1` in one transaction. The sync jobs for every added or
+  re-activated source (and a full pass when its scope changed) are inserted
+  inside that same transaction, so a failed enqueue rolls the source writes
+  back. A source that is not `Source.syncable?/1` (e.g. `policy: :deny`) is
+  written but not enqueued. Requires a running Oban instance.
   """
   @spec apply([entry()]) :: {:ok, [change()]} | {:error, term()}
   def apply(entries) do
-    changes = plan(entries)
-
-    result = Repo.transaction(fn -> Enum.map(changes, &write!/1) end)
-
-    with {:ok, written} <- result do
-      for {change, source} <- written, job <- sync_jobs(change), do: enqueue!(source, job)
+    with {:ok, changes} <- plan(entries),
+         {:ok, _} <- Repo.transaction(fn -> Enum.each(changes, &write_and_enqueue!/1) end) do
       {:ok, changes}
     end
   end
 
-  defp write!(change) do
+  defp write_and_enqueue!(change) do
     case write(change) do
-      {:ok, source} -> {change, source}
+      {:ok, source} -> for job <- sync_jobs(change), do: enqueue!(source, job)
       {:error, reason} -> Repo.rollback(reason)
     end
   end
@@ -311,8 +356,16 @@ defmodule RetrievalNode.SourcesFile do
     |> Repo.insert()
   end
 
-  defp write({:update, s, e}),
-    do: s |> Source.update_changeset(Map.take(e, [:name, :active, :config])) |> Repo.update()
+  # The file's config replaces the stored one, except for the pinned slug,
+  # which is kept (or pinned now, on a rename).
+  defp write({:update, s, e}) do
+    slug = Map.get(s.config || %{}, "mirror_slug") || pinned_slug(s, e)
+    config = if slug, do: Map.put(e.config, "mirror_slug", slug), else: e.config
+
+    s
+    |> Source.update_changeset(%{name: e.name, active: e.active, config: config})
+    |> Repo.update()
+  end
 
   defp write({:deactivate, s}),
     do: s |> Source.update_changeset(%{active: false}) |> Repo.update()
@@ -326,7 +379,7 @@ defmodule RetrievalNode.SourcesFile do
   defp sync_jobs({:update, _s, %{active: false}}), do: []
 
   defp sync_jobs({:update, s, e}) do
-    old = s.config || %{}
+    old = file_config(s.config)
 
     main =
       cond do
@@ -356,7 +409,12 @@ defmodule RetrievalNode.SourcesFile do
   defp worker(_entry), do: RepoSync
 
   defp enqueue!(source, {worker, args}) do
-    {:ok, _job} = Oban.insert(worker.new(Map.put(args, "source_id", source.id)))
+    if Source.syncable?(source) do
+      case Oban.insert(worker.new(Map.put(args, "source_id", source.id))) do
+        {:ok, _job} -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end
   end
 
   # --- reading / validation ---

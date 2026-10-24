@@ -89,6 +89,7 @@ defmodule Mix.Tasks.Rn.Seed do
     Application.put_env(:retrieval_node, :embedding_serving_start, false)
     # These tasks apply (or deliberately don't apply) sources themselves.
     Application.put_env(:retrieval_node, :sources_watch, false)
+    Application.put_env(:retrieval_node, :reranking_serving_start, false)
 
     oban_config = Application.get_env(:retrieval_node, Oban, [])
 
