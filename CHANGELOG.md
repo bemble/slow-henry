@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/bemble/slow-henry/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### Features
+
+* configurable Drive label filters in sources.toml ([#35](https://github.com/bemble/slow-henry/issues/35)) ([3158442](https://github.com/bemble/slow-henry/commit/31584424ccc3ae84839ed0a5364a1dcddedb180a))
+* Jira projects in sources.toml, API token from the UI, optional fields ([#37](https://github.com/bemble/slow-henry/issues/37)) ([d2d0501](https://github.com/bemble/slow-henry/commit/d2d0501b1c18b9608807eb9992c6726d77b3ff40))
+* tabs on the Settings page and in the sources editor, icons in the menu ([#38](https://github.com/bemble/slow-henry/issues/38)) ([99dba8d](https://github.com/bemble/slow-henry/commit/99dba8db597a9a25564cdd8692b944ca205c8caf))
+
 ## [0.5.0](https://github.com/bemble/slow-henry/compare/v0.4.0...v0.5.0) (2026-10-24)
 
 
