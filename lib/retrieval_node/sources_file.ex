@@ -483,32 +483,46 @@ defmodule RetrievalNode.SourcesFile do
   defp label_filters(_), do: {:error, "`include_labels` must be an array of tables"}
 
   defp label_filter(%{} = item) do
-    label = Map.get(item, "label")
-    values = Map.get(item, "values", [])
-    unlabeled = Map.get(item, "unlabeled", false)
+    filter = %{
+      "label" => Map.get(item, "label"),
+      "values" => Map.get(item, "values", []),
+      "unlabeled" => Map.get(item, "unlabeled", false)
+    }
 
-    cond do
-      (unknown = Map.keys(item) -- ~w(label values unlabeled)) != [] ->
+    case Map.keys(item) -- ~w(label values unlabeled) do
+      [] ->
+        case label_filter_error(filter) do
+          nil -> {:ok, filter}
+          msg -> {:error, msg}
+        end
+
+      unknown ->
         {:error, "unknown key(s) #{Enum.join(unknown, ", ")}"}
-
-      not is_binary(label) or String.trim(label) == "" ->
-        {:error, "`label` must be a non-empty string"}
-
-      not is_list(values) or not Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) ->
-        {:error, "`values` must be a list of choice names"}
-
-      not is_boolean(unlabeled) ->
-        {:error, "`unlabeled` must be true or false"}
-
-      values == [] and not unlabeled ->
-        {:error, "matches no doc (no `values` and `unlabeled` is false)"}
-
-      true ->
-        {:ok, %{"label" => label, "values" => values, "unlabeled" => unlabeled}}
     end
   end
 
   defp label_filter(_), do: {:error, "must be a table"}
+
+  defp label_filter_error(%{"label" => label, "values" => values, "unlabeled" => unlabeled}) do
+    cond do
+      not non_blank?(label) ->
+        "`label` must be a non-empty string"
+
+      not is_list(values) or not Enum.all?(values, &non_blank?/1) ->
+        "`values` must be a list of choice names"
+
+      not is_boolean(unlabeled) ->
+        "`unlabeled` must be true or false"
+
+      values == [] and not unlabeled ->
+        "matches no doc (no `values` and `unlabeled` is false)"
+
+      true ->
+        nil
+    end
+  end
+
+  defp non_blank?(value), do: is_binary(value) and String.trim(value) != ""
 
   # shared_with_me and include_labels are only stored when they differ from
   # their default, so sources configured before the options existed don't

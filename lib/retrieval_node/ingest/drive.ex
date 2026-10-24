@@ -255,37 +255,50 @@ defmodule RetrievalNode.Ingest.Drive do
 
   defp resolve_filter(labels, %{"label" => title} = filter) do
     values = filter["values"] || []
-    label = Enum.find(labels, &(downcase(get_in(&1, ["properties", "title"])) == downcase(title)))
-    field = label && Enum.find(label["fields"] || [], &is_map(&1["selectionOptions"]))
-    choices = (field && get_in(field, ["selectionOptions", "choices"])) || []
 
+    with {:ok, label} <- find_label(labels, title),
+         {:ok, field} <- selection_field(label, title, values),
+         {:ok, kept} <- choices(field, title, values) do
+      {:ok,
+       %{
+         label_id: label["id"],
+         field_id: field && field["id"],
+         allowed: MapSet.new(kept, & &1["id"]),
+         unlabeled: filter["unlabeled"] == true,
+         title: get_in(label, ["properties", "title"]),
+         names: Enum.map(kept, &get_in(&1, ["properties", "displayName"]))
+       }}
+    end
+  end
+
+  defp find_label(labels, title) do
+    case Enum.find(labels, &(downcase(get_in(&1, ["properties", "title"])) == downcase(title))) do
+      nil -> {:error, {:label_not_found, title}}
+      label -> {:ok, label}
+    end
+  end
+
+  # Without values, the filter only looks at whether the label is applied.
+  defp selection_field(label, title, values) do
+    case {Enum.find(label["fields"] || [], &is_map(&1["selectionOptions"])), values} do
+      {nil, []} -> {:ok, nil}
+      {nil, _values} -> {:error, {:label_without_choices, title}}
+      {field, _values} -> {:ok, field}
+    end
+  end
+
+  defp choices(nil, _title, []), do: {:ok, []}
+
+  defp choices(field, title, values) do
     by_name =
-      Map.new(choices, &{downcase(get_in(&1, ["properties", "displayName"])), &1})
+      Map.new(
+        get_in(field, ["selectionOptions", "choices"]) || [],
+        &{downcase(get_in(&1, ["properties", "displayName"])), &1}
+      )
 
-    missing = Enum.reject(values, &Map.has_key?(by_name, downcase(&1)))
-
-    cond do
-      is_nil(label) ->
-        {:error, {:label_not_found, title}}
-
-      values != [] and is_nil(field) ->
-        {:error, {:label_without_choices, title}}
-
-      missing != [] ->
-        {:error, {:label_choices_not_found, title, missing}}
-
-      true ->
-        kept = Enum.map(values, &Map.fetch!(by_name, downcase(&1)))
-
-        {:ok,
-         %{
-           label_id: label["id"],
-           field_id: field && field["id"],
-           allowed: MapSet.new(kept, & &1["id"]),
-           unlabeled: filter["unlabeled"] == true,
-           title: get_in(label, ["properties", "title"]),
-           names: Enum.map(kept, &get_in(&1, ["properties", "displayName"]))
-         }}
+    case Enum.reject(values, &Map.has_key?(by_name, downcase(&1))) do
+      [] -> {:ok, Enum.map(values, &Map.fetch!(by_name, downcase(&1)))}
+      missing -> {:error, {:label_choices_not_found, title, missing}}
     end
   end
 
