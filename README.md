@@ -38,8 +38,9 @@ exposed to clients as **MCP tools** over HTTP.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;
-  - `/sources/edit` — pick the GitHub repos, the Jira projects and the Google
-    Drive scope to index (writes `sources.toml`);
+  - `/sources/edit` — one tab per kind of source (GitHub repos, other git
+    URLs, Jira projects, Google Drive scope), then Review & save (writes
+    `sources.toml`);
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
   - `/settings` — the app version and one tab per service: GitHub, Jira
