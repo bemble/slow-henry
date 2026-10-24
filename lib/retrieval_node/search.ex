@@ -23,6 +23,9 @@ defmodule RetrievalNode.Search do
       string (`"git_repo"`/`"jira_project"`/`"drive_folder"`)
     * `:author` / `:reviewer` / `:involves` — a GitHub login: PRs it authored,
       reviewed, or either
+    * `:issue_type` / `:assignee` / `:reporter` / `:parent` — Jira issues of that
+      type (e.g. `"Bug"`), whose assignee or reporter display name contains
+      the text, or under that parent key (an epic)
     * `:top_k` — result count (default 20)
     * `:embedding` — a precomputed 384-float query vector; when given, skips the
       embedding step (used by tests and callers that already hold an embedding)
@@ -68,6 +71,10 @@ defmodule RetrievalNode.Search do
         :author,
         :reviewer,
         :involves,
+        :issue_type,
+        :assignee,
+        :reporter,
+        :parent,
         :top_k
       ])
       |> Keyword.merge(embedding: embedding, text_query: query_text)

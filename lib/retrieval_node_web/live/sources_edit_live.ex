@@ -2,7 +2,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   @moduledoc """
   Editor for `sources.toml` (`RetrievalNode.SourcesFile`): GitHub repos
   picked from the token's list (`Ingest.GitHub.list_repos/0`), other git
-  URLs, and the Google Drive scope.
+  URLs, Jira projects (by key), and the Google Drive scope.
 
   It edits the file the watcher applies. Review shows `SourcesFile.plan/1`;
   Save writes the file with `SourcesFile.save/3` — refused when the file
@@ -14,6 +14,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
   alias RetrievalNode.Google.OAuth, as: GoogleOAuth
   alias RetrievalNode.Ingest.{Drive, DrivePolicy, GitHub}
+  alias RetrievalNode.Jira.Credentials, as: JiraCredentials
   alias RetrievalNode.SourcesFile
   alias RetrievalNode.SourcesFile.Watcher
 
@@ -24,7 +25,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Edit sources", query: "", review: nil, drive_info: %{}, url_form: 0)
+      |> assign(
+        page_title: "Edit sources",
+        query: "",
+        review: nil,
+        drive_info: %{},
+        url_form: 0,
+        jira_form: 0,
+        jira_connected: JiraCredentials.configured?()
+      )
       |> load_file()
       |> load_github()
 
@@ -36,15 +45,19 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
     case SourcesFile.load_with_hash(path) do
       {:ok, entries, hash} ->
-        {drive, git} = Enum.split_with(entries, &(&1.source_type == :drive_folder))
+        by_type = Enum.group_by(entries, & &1.source_type)
 
         socket
         |> assign(path: path, hash: hash, load_error: nil)
-        |> assign(repos: Enum.map(git, &row_from_entry/1), drive: drive_state(List.first(drive)))
+        |> assign(
+          repos: Enum.map(by_type[:git_repo] || [], &row_from_entry/1),
+          jira: Enum.map(by_type[:jira_project] || [], &jira_row/1),
+          drive: drive_state(List.first(by_type[:drive_folder] || []))
+        )
         |> resolve_drive_ids()
 
       {:error, msg} ->
-        assign(socket, path: path, hash: nil, load_error: msg, repos: [], drive: nil)
+        assign(socket, path: path, hash: nil, load_error: msg, repos: [], jira: [], drive: nil)
     end
   end
 
@@ -76,6 +89,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   end
 
   defp new_key, do: "r#{System.unique_integer([:positive])}"
+
+  defp jira_row(entry) do
+    %{
+      key: new_key(),
+      project: entry.identifier,
+      active: entry.active,
+      options: for(o <- SourcesFile.jira_options(), entry.config[o] == true, do: o)
+    }
+  end
 
   defp drive_state(nil), do: nil
 
@@ -140,8 +162,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
   def handle_event("change", params, socket) do
     repos = Enum.map(socket.assigns.repos, &update_repo(&1, params["repos"][&1.key]))
+    jira = Enum.map(socket.assigns.jira, &update_jira(&1, params["jira"][&1.key]))
     drive = update_drive(socket.assigns.drive, params["drive"])
-    {:noreply, socket |> edited(repos: repos, drive: drive) |> resolve_drive_ids()}
+    {:noreply, socket |> edited(repos: repos, jira: jira, drive: drive) |> resolve_drive_ids()}
   end
 
   def handle_event("toggle_github", %{"full_name" => full_name}, socket) do
@@ -173,6 +196,28 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
     {:noreply, socket}
   end
+
+  # Project keys are upper-case; validation reports anything else.
+  def handle_event("add_jira", %{"project" => project}, socket) do
+    project = project |> String.trim() |> String.upcase()
+
+    socket =
+      if project == "" or Enum.any?(socket.assigns.jira, &(&1.project == project)) do
+        socket
+      else
+        row = %{key: new_key(), project: project, active: true, options: []}
+
+        edited(socket,
+          jira: socket.assigns.jira ++ [row],
+          jira_form: socket.assigns.jira_form + 1
+        )
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_jira", %{"key" => key}, socket),
+    do: {:noreply, edited(socket, jira: Enum.reject(socket.assigns.jira, &(&1.key == key)))}
 
   def handle_event("remove_repo", %{"key" => key}, socket),
     do: {:noreply, edited(socket, repos: Enum.reject(socket.assigns.repos, &(&1.key == key)))}
@@ -287,6 +332,16 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     }
   end
 
+  defp update_jira(row, nil), do: row
+
+  defp update_jira(row, params) do
+    %{
+      row
+      | active: params["active"] == "true",
+        options: for(o <- SourcesFile.jira_options(), params[o] == "true", do: o)
+    }
+  end
+
   defp update_drive(nil, _params), do: nil
   defp update_drive(drive, nil), do: drive
 
@@ -379,7 +434,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   # --- entries ---
 
   # The form as a TOML document, so `SourcesFile.parse/1` validates it.
-  defp entries(%{repos: repos, drive: drive}) do
+  defp entries(%{repos: repos, jira: jira, drive: drive}) do
     git =
       for r <- repos do
         %{
@@ -391,7 +446,16 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         }
       end
 
-    doc = %{"git" => git}
+    doc = %{
+      "git" => git,
+      "jira" =>
+        for j <- jira do
+          Map.merge(
+            %{"project" => j.project, "active" => j.active},
+            Map.new(j.options, &{&1, true})
+          )
+        end
+    }
 
     doc =
       if drive,
@@ -520,6 +584,65 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           </form>
         </section>
 
+        <section id="jira" class="space-y-3">
+          <h2 class="text-lg font-semibold">Jira projects</h2>
+          <p class="text-sm opacity-70">
+            Resolved issues (status category Done) of each project, by its key: summary,
+            description, type and status, plus the fields checked below.
+            <span :if={!@jira_connected}>
+              <.link navigate={~p"/connections"} class="link">Connect Jira</.link>
+              first: projects don't sync without an API token.
+            </span>
+          </p>
+          <form
+            :if={@jira != []}
+            id="jira-projects-form"
+            phx-change="change"
+            phx-submit="review"
+            class="space-y-2"
+          >
+            <div
+              :for={row <- @jira}
+              id={"jira-#{row.key}"}
+              class="flex items-center gap-4 rounded-box border border-base-300 px-3 py-2"
+            >
+              <span class="w-48 font-mono font-medium">{row.project}</span>
+              <.input
+                type="checkbox"
+                id={"#{row.key}-active"}
+                name={"jira[#{row.key}][active]"}
+                value={row.active}
+                label="Active"
+              />
+              <.input
+                :for={o <- SourcesFile.jira_options()}
+                type="checkbox"
+                id={"#{row.key}-#{o}"}
+                name={"jira[#{row.key}][#{o}]"}
+                value={o in row.options}
+                label={jira_option_label(o)}
+              />
+              <button
+                type="button"
+                phx-click="remove_jira"
+                phx-value-key={row.key}
+                class="btn btn-ghost btn-sm ml-auto"
+                title="Remove (deactivates the source)"
+              >
+                <.icon name="hero-trash" class="size-4" />
+              </button>
+            </div>
+          </form>
+          <form id={"add-jira-#{@jira_form}"} phx-submit="add_jira" class="flex items-start gap-2">
+            <div class="w-48">
+              <.input name="project" value="" placeholder="Project key, e.g. CLOUD" />
+            </div>
+            <button type="submit" class="btn btn-sm mt-1">
+              <.icon name="hero-plus" class="size-4" /> Add
+            </button>
+          </form>
+        </section>
+
         <section id="drive" class="space-y-3">
           <h2 class="text-lg font-semibold">Google Drive</h2>
           <.drive_form drive={@drive} info={@drive_info} />
@@ -535,6 +658,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     </Layouts.app>
     """
   end
+
+  defp jira_option_label("parent"), do: "Parent / epic"
+  defp jira_option_label(option), do: String.capitalize(option)
 
   defp listed({:ok, repos}), do: MapSet.new(repos, &String.downcase(&1.full_name))
   defp listed(_github), do: nil

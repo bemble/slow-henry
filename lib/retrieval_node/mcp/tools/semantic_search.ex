@@ -24,6 +24,20 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
     field(:involves, :string,
       description: "GitHub login: merged PRs this person authored or reviewed"
     )
+
+    field(:issue_type, :string, description: "Jira issue type, e.g. Bug, Story, Task, Epic")
+
+    field(:assignee, :string,
+      description: "Jira assignee: part of their display name (projects indexing it)"
+    )
+
+    field(:reporter, :string,
+      description: "Jira reporter: part of their display name (projects indexing it)"
+    )
+
+    field(:parent, :string,
+      description: "Jira parent issue key (e.g. an epic): its children (projects indexing it)"
+    )
   end
 
   @impl true
@@ -32,7 +46,17 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
       {:ok, source_type} ->
         opts =
           params
-          |> Map.take([:repo, :lang, :author, :reviewer, :involves])
+          |> Map.take([
+            :repo,
+            :lang,
+            :author,
+            :reviewer,
+            :involves,
+            :issue_type,
+            :assignee,
+            :reporter,
+            :parent
+          ])
           |> Enum.to_list()
           |> Keyword.put(:source_type, source_type)
           |> Enum.reject(fn {_k, v} -> is_nil(v) end)
