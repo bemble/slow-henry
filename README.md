@@ -275,7 +275,10 @@ indexes newly included files and removes newly excluded ones.
 `pull_requests = true` indexes the repo's **merged** pull requests through
 GitHub's GraphQL API, with the GitHub App token (see below): one document per
 PR, under the virtual path `pulls/<number>`, with its title, author, merge
-date, URL, description, and the human comments and reviews (bots left out).
+date, URL, description, and the human comments and reviews (bots and AI
+reviewers such as Copilot left out). The author and the human reviewers are
+also stored as metadata, so `semantic_search` can filter by `author`,
+`reviewer`, or `involves` (either one).
 They are synced hourly, picking up PRs edited or commented after merge.
 
 New sources get their first sync right away, then git syncs every 15 minutes

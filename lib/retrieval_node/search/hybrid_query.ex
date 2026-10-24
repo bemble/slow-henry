@@ -8,7 +8,7 @@ defmodule RetrievalNode.Search.HybridQuery do
   at the edge of what the macro DSL expresses cleanly, and the load-bearing
   correctness property is far easier to read (and `EXPLAIN ANALYZE`) in plain
   SQL. That property: the optional `source_id`/`repo`/`lang`/`source_type`
-  filters are applied **inside each leg's own `WHERE`** — so the `row_number()`
+  (and PR `author`/`reviewer`/`involves`) filters are applied **inside each leg's own `WHERE`** — so the `row_number()`
   window ranks only the already-filtered set. A filter applied after fusion
   could let an out-of-scope chunk consume a rank-1 slot and starve an in-scope
   chunk, silently degrading filtered recall.
@@ -60,8 +60,19 @@ defmodule RetrievalNode.Search.HybridQuery do
           source_type: String.t() | nil,
           repo: String.t() | nil,
           lang: String.t() | nil,
+          author: String.t() | nil,
+          reviewer: String.t() | nil,
+          involves: String.t() | nil,
           top_k: pos_integer()
         ]
+
+  # GitHub logins are case-insensitive; PR chunks carry `reviewers` as a jsonb
+  # array (`PullRequestSync`), other chunks have none and never match.
+  reviewed_by = fn param ->
+    "EXISTS (SELECT 1 FROM jsonb_array_elements_text(" <>
+      "CASE jsonb_typeof(metadata->'reviewers') WHEN 'array' THEN metadata->'reviewers' END" <>
+      ") r WHERE lower(r) = lower(#{param}))"
+  end
 
   @sql """
   WITH vector_search AS (
@@ -73,6 +84,10 @@ defmodule RetrievalNode.Search.HybridQuery do
       AND ($6::text IS NULL OR repo = $6)
       AND ($7::text IS NULL OR lang = $7)
       AND ($8::text IS NULL OR source_type = $8)
+      AND ($9::text IS NULL OR lower(metadata->>'author') = lower($9))
+      AND ($10::text IS NULL OR #{reviewed_by.("$10")})
+      AND ($11::text IS NULL OR lower(metadata->>'author') = lower($11)
+           OR #{reviewed_by.("$11")})
     ORDER BY embedding <=> $1::vector
     LIMIT #{@candidate_pool}
   ),
@@ -86,6 +101,10 @@ defmodule RetrievalNode.Search.HybridQuery do
       AND ($6::text IS NULL OR repo = $6)
       AND ($7::text IS NULL OR lang = $7)
       AND ($8::text IS NULL OR source_type = $8)
+      AND ($9::text IS NULL OR lower(metadata->>'author') = lower($9))
+      AND ($10::text IS NULL OR #{reviewed_by.("$10")})
+      AND ($11::text IS NULL OR lower(metadata->>'author') = lower($11)
+           OR #{reviewed_by.("$11")})
     ORDER BY ts_rank(tsv, websearch_to_tsquery('english', $2)) DESC
     LIMIT #{@candidate_pool}
   ),
@@ -112,7 +131,9 @@ defmodule RetrievalNode.Search.HybridQuery do
   `:text_query` (free-form, parsed with `websearch_to_tsquery`). Optional
   `:source_id`/`:source_type`/`:repo`/`:lang` filters and `:top_k`
   (default #{@default_top_k}). `:source_type` is the DB enum string
-  (`"git_repo"`/`"jira_project"`/`"drive_folder"`).
+  (`"git_repo"`/`"jira_project"`/`"drive_folder"`). `:author`/`:reviewer`
+  match a pull request's GitHub login (case-insensitive), `:involves` either
+  one — so they only ever return PR chunks.
   """
   @spec search(opts) :: [result]
   def search(opts) do
@@ -129,7 +150,10 @@ defmodule RetrievalNode.Search.HybridQuery do
       dump_uuid(opts[:source_id]),
       opts[:repo],
       opts[:lang],
-      opts[:source_type]
+      opts[:source_type],
+      opts[:author],
+      opts[:reviewer],
+      opts[:involves]
     ]
 
     %Postgrex.Result{rows: rows} = Repo.query!(@sql, params)

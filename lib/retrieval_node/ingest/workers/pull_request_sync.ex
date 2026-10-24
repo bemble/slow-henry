@@ -7,7 +7,9 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   Each merged PR becomes one document of the git source — title, author,
   merge date, URL, description, then the human comments and reviews — under
   the virtual path `pulls/<number>`, so it shows up next to the repo's files
-  in the UI and in search results. Bot comments are left out.
+  in the UI and in search results. Bot and AI comments are left out. The
+  author and the human reviewers also go in the metadata (`author`,
+  `reviewers`), which `semantic_search` filters on.
 
   The watermark is the last `updatedAt` seen (`cursor["prs_updated_since"]`):
   the GitHub search is sorted by update, oldest first, so a PR edited or
@@ -126,6 +128,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   defp row(source, pr) do
     path = "pulls/#{pr.number}"
+    people = %{"author" => pr.author, "reviewers" => pr.reviewers}
 
     %{
       source: "git",
@@ -134,15 +137,19 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
       repo: Source.mirror_slug(source),
       lang: "markdown",
       natural_key: "repo:#{source.id}:#{path}",
-      content_hash: :crypto.hash(:sha256, pr.text) |> Base.encode16(case: :lower),
+      # Covers the people too: an approval with no comment changes `reviewers`
+      # but not the text, and the owner skips a row whose hash is unchanged.
+      content_hash:
+        :crypto.hash(:sha256, [pr.text, Jason.encode!(people)]) |> Base.encode16(case: :lower),
       raw_content: pr.text,
-      metadata: %{
-        "path" => path,
-        "name" => "PR ##{pr.number}: #{pr.title}",
-        "pr" => pr.number,
-        "url" => pr.url,
-        "merged_at" => pr.merged_at
-      }
+      metadata:
+        Map.merge(people, %{
+          "path" => path,
+          "name" => "PR ##{pr.number}: #{pr.title}",
+          "pr" => pr.number,
+          "url" => pr.url,
+          "merged_at" => pr.merged_at
+        })
     }
   end
 

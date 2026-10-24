@@ -35,12 +35,21 @@ defmodule RetrievalNode.Ingest.GitHub do
   }
   """
 
+  # AI reviewers/commenters that don't come through as a GitHub App bot
+  # (`__typename: "Bot"` or a `[bot]` login), compared lowercased. They are
+  # left out of the rendered discussion and of `reviewers`.
+  @ai_logins ~w(copilot copilot-pull-request-reviewer copilot-swe-agent coderabbitai
+                gemini-code-assist sourcery-ai greptile-apps ellipsis-dev
+                qodo-merge-pro devin-ai-integration cursor claude)
+
   @type pr :: %{
           number: pos_integer(),
           title: String.t(),
           url: String.t(),
           merged_at: String.t(),
           updated_at: String.t(),
+          author: String.t(),
+          reviewers: [String.t()],
           text: String.t()
         }
 
@@ -135,8 +144,23 @@ defmodule RetrievalNode.Ingest.GitHub do
       url: node["url"],
       merged_at: node["mergedAt"],
       updated_at: node["updatedAt"],
+      author: login(node["author"]),
+      reviewers: reviewers(node),
       text: render(repo, node)
     }
+  end
+
+  # Everyone who submitted a review — an approval with no comment counts —
+  # except bots, AI reviewers, deleted accounts and the author's own replies.
+  defp reviewers(node) do
+    author = login(node["author"])
+
+    for r <- get_in(node, ["reviews", "nodes"]) || [],
+        not bot?(r["author"]),
+        login = login(r["author"]),
+        login not in ["ghost", author],
+        uniq: true,
+        do: login
   end
 
   # Markdown: title, who/when, the description, then the human discussion.
@@ -175,7 +199,10 @@ defmodule RetrievalNode.Ingest.GitHub do
   defp section(title, items, fun), do: Enum.join(["## #{title}" | Enum.map(items, fun)], "\n\n")
 
   defp bot?(%{"__typename" => "Bot"}), do: true
-  defp bot?(%{"login" => login}) when is_binary(login), do: String.ends_with?(login, "[bot]")
+
+  defp bot?(%{"login" => login}) when is_binary(login),
+    do: String.ends_with?(login, "[bot]") or String.downcase(login) in @ai_logins
+
   defp bot?(_), do: false
 
   defp login(%{"login" => login}), do: login

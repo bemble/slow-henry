@@ -17,6 +17,12 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
     field(:source, :string, description: "Filter by source kind: git | jira | drive")
     field(:repo, :string, description: "Filter by repo slug (see list_repos)")
     field(:lang, :string, description: "Filter by language, e.g. python, elixir")
+    field(:author, :string, description: "GitHub login: merged PRs this person authored")
+    field(:reviewer, :string, description: "GitHub login: merged PRs this person reviewed")
+
+    field(:involves, :string,
+      description: "GitHub login: merged PRs this person authored or reviewed"
+    )
   end
 
   @impl true
@@ -24,7 +30,10 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
     case normalize_source(Map.get(params, :source)) do
       {:ok, source_type} ->
         opts =
-          [source_type: source_type, repo: Map.get(params, :repo), lang: Map.get(params, :lang)]
+          params
+          |> Map.take([:repo, :lang, :author, :reviewer, :involves])
+          |> Enum.to_list()
+          |> Keyword.put(:source_type, source_type)
           |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
         # mode is "text_only" when the embedding backend is down (BM25 only).

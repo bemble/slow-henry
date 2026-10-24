@@ -155,6 +155,67 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
     refute pr.text =~ "@dan"
   end
 
+  test "records the author and the human reviewers, without bots or AI" do
+    review = fn login, typename ->
+      %{
+        "body" => "",
+        "state" => "COMMENTED",
+        "author" => %{"login" => login, "__typename" => typename}
+      }
+    end
+
+    pr =
+      GitHub.to_pr(
+        "acme/app",
+        node(4, "2026-01-01T00:00:00Z", %{
+          "reviews" => %{
+            "nodes" => [
+              review.("carol", "User"),
+              review.("copilot-pull-request-reviewer", "Bot"),
+              review.("CodeRabbitAI", "User"),
+              review.("gemini-code-assist", nil),
+              review.("alice", "User"),
+              review.("carol", "User"),
+              review.("dan", "User"),
+              %{"body" => "", "state" => "APPROVED", "author" => nil}
+            ]
+          }
+        })
+      )
+
+    assert pr.author == "alice"
+    assert pr.reviewers == ["carol", "dan"]
+  end
+
+  test "stages author and reviewers as metadata; a new reviewer changes the hash", %{
+    source: source
+  } do
+    approved = %{
+      "updatedAt" => "2026-01-02T00:00:00Z",
+      "reviews" => %{
+        "nodes" => [%{"body" => "", "state" => "APPROVED", "author" => %{"login" => "bob"}}]
+      }
+    }
+
+    runner(%{nil => {[node(1, "2026-01-01T00:00:00Z")], nil}})
+    assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+    runner(%{nil => {[node(1, "2026-01-01T00:00:00Z", approved)], nil}})
+    assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+    assert [first, second] =
+             Repo.all(
+               from p in PendingChunk,
+                 where: p.source_id == ^source.id,
+                 order_by: p.id,
+                 select: %{metadata: p.metadata, hash: p.content_hash, text: p.raw_content}
+             )
+
+    assert %{"author" => "alice", "reviewers" => []} = first.metadata
+    assert %{"author" => "alice", "reviewers" => ["bob"]} = second.metadata
+    assert first.text == second.text
+    assert first.hash != second.hash
+  end
+
   test "repo_from_url understands github https and ssh URLs" do
     assert {:ok, "acme/app"} = GitHub.repo_from_url("https://github.com/acme/app.git")
     assert {:ok, "acme/app"} = GitHub.repo_from_url("https://github.com/acme/app")

@@ -21,6 +21,8 @@ defmodule RetrievalNode.Search do
     * `:source_id` / `:source_type` / `:repo` / `:lang` — optional filters applied
       inside both ranking CTEs (see `HybridQuery`). `:source_type` is the DB enum
       string (`"git_repo"`/`"jira_project"`/`"drive_folder"`)
+    * `:author` / `:reviewer` / `:involves` — a GitHub login: PRs it authored,
+      reviewed, or either
     * `:top_k` — result count (default 20)
     * `:embedding` — a precomputed 384-float query vector; when given, skips the
       embedding step (used by tests and callers that already hold an embedding)
@@ -58,7 +60,16 @@ defmodule RetrievalNode.Search do
   defp run(query_text, embedding, opts) do
     query_opts =
       opts
-      |> Keyword.take([:source_id, :source_type, :repo, :lang, :top_k])
+      |> Keyword.take([
+        :source_id,
+        :source_type,
+        :repo,
+        :lang,
+        :author,
+        :reviewer,
+        :involves,
+        :top_k
+      ])
       |> Keyword.merge(embedding: embedding, text_query: query_text)
 
     query_opts

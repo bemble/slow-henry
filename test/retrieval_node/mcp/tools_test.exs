@@ -167,6 +167,34 @@ defmodule RetrievalNode.MCP.ToolsTest do
       assert Enum.all?(results, &(&1["source_type"] == "jira_project"))
     end
 
+    test "author / reviewer / involves narrow to the PRs a person worked on" do
+      source =
+        Repo.insert!(%Source{source_type: :git_repo, name: "acme/app", identifier: "file:///a"})
+
+      pr = fn n, author, reviewers ->
+        insert_chunk(source, :git_repo, "quuxfeature change #{n}",
+          repo: "acme/app",
+          metadata: %{"path" => "pulls/#{n}", "author" => author, "reviewers" => reviewers}
+        )
+      end
+
+      pr.(1, "alice", ["bob"])
+      pr.(2, "bob", ["carol"])
+      pr.(3, "carol", ["dan"])
+      insert_chunk(source, :git_repo, "quuxfeature in code", metadata: %{"path" => "lib/q.ex"})
+
+      paths = fn params ->
+        %{"results" => results} = ok(SemanticSearch, Map.put(params, :query, "quuxfeature"))
+        results |> Enum.map(& &1["metadata"]["path"]) |> Enum.sort()
+      end
+
+      assert paths.(%{author: "Bob"}) == ["pulls/2"]
+      assert paths.(%{reviewer: "bob"}) == ["pulls/1"]
+      assert paths.(%{involves: "bob"}) == ["pulls/1", "pulls/2"]
+      assert paths.(%{author: "carol", reviewer: "dan"}) == ["pulls/3"]
+      assert length(paths.(%{})) == 4
+    end
+
     test "an unknown source is rejected" do
       assert err(SemanticSearch, %{query: "x", source: "bogus"}) =~ "unknown source"
     end
@@ -245,6 +273,7 @@ defmodule RetrievalNode.MCP.ToolsTest do
         content_hash: "h-#{System.unique_integer([:positive])}",
         content: content,
         context_breadcrumb: opts[:breadcrumb] || "bc",
+        metadata: opts[:metadata] || %{},
         embedding: Embedding.embed(content)
       })
     )
