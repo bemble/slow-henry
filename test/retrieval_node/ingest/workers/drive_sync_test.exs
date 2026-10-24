@@ -155,6 +155,50 @@ defmodule RetrievalNode.Ingest.Workers.DriveSyncTest do
              }
     end
 
+    test "filters on the label and choices configured on the source", %{source: source} do
+      source
+      |> Source.update_changeset(%{
+        config: %{
+          "my_drive" => true,
+          "include" => [],
+          "include_labels" => [
+            %{"label" => "classification", "values" => ["confidential"], "unlabeled" => true}
+          ]
+        }
+      })
+      |> Repo.update!()
+
+      stub([
+        {&my_drive?/2,
+         files([
+           doc("plain"),
+           classified(doc("pub"), "pub"),
+           classified(doc("secret"), "conf")
+         ])}
+      ])
+
+      assert :ok = perform_job(DriveSync, %{"source_id" => source.id})
+      assert raw_keys() == ["drive:plain", "drive:secret"]
+    end
+
+    test "no label filter: indexes every doc, without asking for labels", %{source: source} do
+      source
+      |> Source.update_changeset(%{
+        config: %{"my_drive" => true, "include" => [], "include_labels" => []}
+      })
+      |> Repo.update!()
+
+      stub([
+        {fn path, _ -> path == "/v2/labels" end,
+         fn _ -> flunk("read labels without filters") end},
+        {fn path, q -> my_drive?(path, q) and not Map.has_key?(q, "includeLabels") end,
+         files([doc("plain"), classified(doc("secret"), "conf")])}
+      ])
+
+      assert :ok = perform_job(DriveSync, %{"source_id" => source.id})
+      assert raw_keys() == ["drive:plain", "drive:secret"]
+    end
+
     test "skips up-to-date docs and deletes indexed docs that are no longer allowed", %{
       source: source
     } do
@@ -342,13 +386,13 @@ defmodule RetrievalNode.Ingest.Workers.DriveSyncTest do
     end
   end
 
-  test "fails closed when the Classification label can't be read", %{source: source} do
+  test "fails closed when a filtered label can't be read", %{source: source} do
     stub([
       {fn path, _ -> path == "/v2/labels" end, &Req.Test.json(&1, %{"labels" => []})},
       {&my_drive?/2, fn _ -> flunk("listed files without a classification label") end}
     ])
 
-    assert {:error, :classification_label_not_found} =
+    assert {:error, {:label_not_found, "Classification"}} =
              perform_job(DriveSync, %{"source_id" => source.id})
 
     assert Repo.all(PendingChunk) == []

@@ -13,7 +13,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
   alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
   alias RetrievalNode.Google.OAuth, as: GoogleOAuth
-  alias RetrievalNode.Ingest.{Drive, GitHub}
+  alias RetrievalNode.Ingest.{Drive, DrivePolicy, GitHub}
   alias RetrievalNode.SourcesFile
   alias RetrievalNode.SourcesFile.Watcher
 
@@ -84,7 +84,17 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       my_drive: entry.config["my_drive"],
       shared_with_me: entry.config["shared_with_me"] == true,
       active: entry.active,
-      include: entry.config["include"]
+      include: entry.config["include"],
+      labels: Enum.map(DrivePolicy.label_filters(entry.config), &label_row/1)
+    }
+  end
+
+  # A label filter as form fields: values as one comma-separated input.
+  defp label_row(filter) do
+    %{
+      label: filter["label"],
+      values: Enum.join(filter["values"], ", "),
+      unlabeled: filter["unlabeled"]
     }
   end
 
@@ -176,7 +186,14 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   end
 
   def handle_event("enable_drive", _params, socket) do
-    drive = %{my_drive: true, shared_with_me: false, active: true, include: []}
+    drive = %{
+      my_drive: true,
+      shared_with_me: false,
+      active: true,
+      include: [],
+      labels: Enum.map(DrivePolicy.default_label_filters(), &label_row/1)
+    }
+
     {:noreply, edited(socket, drive: drive)}
   end
 
@@ -186,6 +203,18 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   def handle_event("add_include", _params, socket) do
     drive = socket.assigns.drive
     {:noreply, edited(socket, drive: %{drive | include: drive.include ++ [""]})}
+  end
+
+  def handle_event("add_label", _params, socket) do
+    drive = socket.assigns.drive
+    row = %{label: "", values: "", unlabeled: false}
+    {:noreply, edited(socket, drive: %{drive | labels: drive.labels ++ [row]})}
+  end
+
+  def handle_event("remove_label", %{"index" => index}, socket) do
+    drive = socket.assigns.drive
+    labels = List.delete_at(drive.labels, String.to_integer(index))
+    {:noreply, edited(socket, drive: %{drive | labels: labels})}
   end
 
   def handle_event("remove_include", %{"index" => index}, socket) do
@@ -267,8 +296,30 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       | my_drive: params["my_drive"] == "true",
         shared_with_me: params["shared_with_me"] == "true",
         active: params["active"] == "true",
-        include: Enum.map(params["include"] || [], &normalize_id/1)
+        include: Enum.map(params["include"] || [], &normalize_id/1),
+        labels: update_labels(drive.labels, params["labels"])
     }
+  end
+
+  # Rows are keyed by their index; a form without them keeps the rows as they are.
+  defp update_labels(rows, nil), do: rows
+
+  defp update_labels(rows, params) do
+    rows
+    |> Enum.with_index()
+    |> Enum.map(fn {row, i} ->
+      case params[to_string(i)] do
+        nil ->
+          row
+
+        p ->
+          %{
+            label: p["label"] || row.label,
+            values: p["values"] || row.values,
+            unlabeled: p["unlabeled"] == "true"
+          }
+      end
+    end)
   end
 
   # A pasted Drive URL becomes its id; anything else is kept for the
@@ -349,7 +400,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             "my_drive" => drive.my_drive,
             "shared_with_me" => drive.shared_with_me,
             "active" => drive.active,
-            "include" => non_blank(drive.include)
+            "include" => non_blank(drive.include),
+            "include_labels" =>
+              for l <- drive.labels do
+                %{
+                  "label" => String.trim(l.label),
+                  "values" => non_blank(String.split(l.values, ",")),
+                  "unlabeled" => l.unlabeled
+                }
+              end
           }),
         else: doc
 
@@ -699,6 +758,51 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           label="Active"
         />
       </div>
+
+      <div class="text-xs opacity-70">
+        Label filters (all must pass): a doc passes one when its selected choice(s) are all
+        listed, or when it doesn't carry the label and "Docs without it" is checked.
+        No filter: every doc in scope is indexed.
+      </div>
+      <div :for={{l, i} <- Enum.with_index(@drive.labels)} class="flex items-start gap-2">
+        <div class="w-56">
+          <.input
+            id={"drive-label-#{i}"}
+            name={"drive[labels][#{i}][label]"}
+            value={l.label}
+            placeholder="Label title"
+            class="input input-sm w-full"
+          />
+        </div>
+        <div class="w-80">
+          <.input
+            id={"drive-label-values-#{i}"}
+            name={"drive[labels][#{i}][values]"}
+            value={l.values}
+            placeholder="Choices, comma-separated"
+            class="input input-sm w-full"
+          />
+        </div>
+        <.input
+          type="checkbox"
+          id={"drive-label-unlabeled-#{i}"}
+          name={"drive[labels][#{i}][unlabeled]"}
+          value={l.unlabeled}
+          label="Docs without it"
+        />
+        <button
+          type="button"
+          phx-click="remove_label"
+          phx-value-index={i}
+          class="btn btn-ghost btn-sm ml-auto"
+          title="Remove"
+        >
+          <.icon name="hero-x-mark" class="size-4" />
+        </button>
+      </div>
+      <button id="add-label" type="button" phx-click="add_label" class="btn btn-ghost btn-xs">
+        <.icon name="hero-plus" class="size-4" /> Add a label filter
+      </button>
 
       <div class="text-xs opacity-70">
         Shared drives and folders (paste an id or the folder's URL)

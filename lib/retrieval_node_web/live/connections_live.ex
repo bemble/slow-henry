@@ -33,6 +33,9 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   alias RetrievalNode.GitHub.OAuth, as: GitHubOAuth
   alias RetrievalNode.Google.OAuth
   alias RetrievalNode.Ingest.Drive
+  alias RetrievalNode.Repo
+  alias RetrievalNode.Retrieval.Source
+  alias RetrievalNode.SourcesFile
 
   @state_salt "google-oauth-state"
   @state_max_age 15 * 60
@@ -211,11 +214,22 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         assign(socket,
           authorized: true,
           token_source: OAuth.token_source(),
-          result: %{stored: true, label: Drive.classification_label()}
+          result: %{stored: true, labels: Drive.label_filters(drive_config())}
         )
 
       {:error, reason} ->
         assign(socket, result: %{error: describe(reason)})
+    end
+  end
+
+  # The label settings to check come from the Drive source, if there is one.
+  defp drive_config do
+    case Repo.get_by(Source,
+           source_type: :drive_folder,
+           identifier: SourcesFile.drive_identifier()
+         ) do
+      %Source{config: %{} = config} -> config
+      _ -> %{}
     end
   end
 
@@ -333,7 +347,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
           <span>Authorized. The token is stored and used from now on, across restarts.</span>
         </div>
 
-        <.label_check label={@result.label} />
+        <.label_check labels={@result.labels} />
       </div>
 
       <details :if={@configured} class="rounded-box border border-base-300 p-4">
@@ -557,16 +571,26 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   defp ok?(status), do: status.model_pulled and match?({:ok, _}, status.probe)
 
-  attr :label, :any, required: true
+  attr :labels, :any, required: true
 
-  defp label_check(%{label: {:ok, %{allowed: allowed}}} = assigns) do
-    assigns = assign(assigns, :count, MapSet.size(allowed))
-
+  defp label_check(%{labels: {:ok, []}} = assigns) do
     ~H"""
     <p id="label-check" class="text-sm">
-      <.icon name="hero-tag" class="size-4" />
-      Classification label found: {@count} indexable choice(s) (Public / Internal).
+      <.icon name="hero-tag" class="size-4" /> No label filter: every Drive doc in scope is indexed.
     </p>
+    """
+  end
+
+  defp label_check(%{labels: {:ok, filters}} = assigns) do
+    assigns = assign(assigns, :filters, filters)
+
+    ~H"""
+    <ul id="label-check" class="text-sm space-y-1">
+      <li :for={f <- @filters}>
+        <.icon name="hero-tag" class="size-4" />
+        {f.title}: {Enum.join(f.names ++ if(f.unlabeled, do: ["no label"], else: []), " / ")}
+      </li>
+    </ul>
     """
   end
 
@@ -575,8 +599,9 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
     <div id="label-check" role="alert" class="alert alert-warning text-sm">
       <.icon name="hero-exclamation-triangle" class="size-5" />
       <span>
-        The Classification label could not be read ({inspect(@label)}). Drive sync indexes nothing
-        until it can: check that the Drive Labels API is enabled.
+        The Drive label filters could not be checked ({inspect(@labels)}). Drive sync indexes
+        nothing until they can: check that the Drive Labels API is enabled and that the labels and
+        choices in sources.toml exist.
       </span>
     </div>
     """

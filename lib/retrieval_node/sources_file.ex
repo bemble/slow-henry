@@ -18,8 +18,14 @@ defmodule RetrievalNode.SourcesFile do
       include = ["0AbC...", "1xYz..."]              # shared drive or folder ids
       # active = false
 
-  Drive docs are further filtered by their Classification label (see
-  `Ingest.DrivePolicy`).
+      [[drive.include_labels]]                      # label filters, all must pass
+      label = "Classification"                      # Drive label title
+      values = ["Public", "Internal"]               # its indexable choices
+      unlabeled = true                              # docs without it pass too (default false)
+
+  Drive docs are filtered by their labels (see `Ingest.DrivePolicy`). With
+  no `include_labels`, the filter is the one above; `include_labels = []`
+  filters nothing.
 
   `apply/1` aligns the `sources` table with the file — at boot and on every
   change by `SourcesFile.Watcher`, or by hand with `mix rn.sources`:
@@ -40,7 +46,7 @@ defmodule RetrievalNode.SourcesFile do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.PathFilter
+  alias RetrievalNode.Ingest.{DrivePolicy, PathFilter}
   alias RetrievalNode.Ingest.Workers.{DriveSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
@@ -71,6 +77,9 @@ defmodule RetrievalNode.SourcesFile do
           | {:update, Source.t(), entry()}
           | {:deactivate, Source.t()}
           | {:unchanged, Source.t()}
+
+  @doc "The identifier of the (single) Drive source."
+  def drive_identifier, do: @drive_identifier
 
   @doc "The file to read: `SOURCES_FILE` if set, else `<data dir>/sources.toml`."
   def default_path,
@@ -157,7 +166,8 @@ defmodule RetrievalNode.SourcesFile do
 
   @doc """
   The file for `entries`: `[[git]]` tables in order, then `[drive]`. Only
-  options that differ from their default are written, except Drive's scope.
+  options that differ from their default are written, except Drive's scope
+  and label filters.
   """
   @spec encode([entry()]) :: String.t()
   def encode(entries) do
@@ -182,8 +192,18 @@ defmodule RetrievalNode.SourcesFile do
       {"my_drive", e.config["my_drive"]},
       {"shared_with_me", e.config["shared_with_me"] == true},
       {"include", e.config["include"]},
-      {"active", if(e.active, do: nil, else: false)}
-    ])
+      {"active", if(e.active, do: nil, else: false)},
+      {"include_labels", if(DrivePolicy.label_filters(e.config) == [], do: [])}
+    ]) <> Enum.map_join(DrivePolicy.label_filters(e.config), &label_table/1)
+  end
+
+  defp label_table(filter) do
+    "\n" <>
+      table("[[drive.include_labels]]", [
+        {"label", filter["label"]},
+        {"values", filter["values"]},
+        {"unlabeled", if(filter["unlabeled"], do: true)}
+      ])
   end
 
   defp table(header, pairs) do
@@ -414,32 +434,108 @@ defmodule RetrievalNode.SourcesFile do
       shared_with_me: Map.get(item, "shared_with_me", false),
       include: Map.get(item, "include", []),
       active: Map.get(item, "active", true),
-      unknown: Map.keys(item) -- ~w(my_drive shared_with_me include active)
+      unknown: Map.keys(item) -- ~w(my_drive shared_with_me include active include_labels)
     }
 
-    case drive_error(flags) do
-      nil ->
-        {:ok,
-         %{
-           source_type: :drive_folder,
-           identifier: @drive_identifier,
-           name: "Google Drive",
-           active: flags.active,
-           config: drive_config(flags)
-         }}
-
-      msg ->
-        {:error, "[drive]: " <> msg}
+    with nil <- drive_error(flags),
+         {:ok, filters} <-
+           label_filters(Map.get(item, "include_labels", DrivePolicy.default_label_filters())) do
+      {:ok,
+       %{
+         source_type: :drive_folder,
+         identifier: @drive_identifier,
+         name: "Google Drive",
+         active: flags.active,
+         config: drive_config(flags, filters)
+       }}
+    else
+      {:error, msg} -> {:error, "[drive]: " <> msg}
+      msg -> {:error, "[drive]: " <> msg}
     end
   end
 
   defp drive_entry(_), do: {:error, "`drive` must be a table ([drive])"}
 
-  # shared_with_me is only stored when on, so sources configured before the
-  # option existed don't read as changed (which would queue a full pass).
-  defp drive_config(flags) do
-    config = %{"my_drive" => flags.my_drive, "include" => flags.include}
-    if flags.shared_with_me == true, do: Map.put(config, "shared_with_me", true), else: config
+  # Normalized (every key set) so the default compares equal however it is
+  # written.
+  defp label_filters(filters) when is_list(filters) do
+    filters
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {item, i}, {:ok, acc} ->
+      case label_filter(item) do
+        {:ok, f} -> {:cont, {:ok, acc ++ [f]}}
+        {:error, msg} -> {:halt, {:error, "include_labels ##{i}: #{msg}"}}
+      end
+    end)
+    |> case do
+      {:ok, filters} ->
+        titles = Enum.map(filters, &String.downcase(&1["label"]))
+
+        if length(Enum.uniq(titles)) == length(titles),
+          do: {:ok, filters},
+          else: {:error, "duplicate label in `include_labels`"}
+
+      error ->
+        error
+    end
+  end
+
+  defp label_filters(_), do: {:error, "`include_labels` must be an array of tables"}
+
+  defp label_filter(%{} = item) do
+    filter = %{
+      "label" => Map.get(item, "label"),
+      "values" => Map.get(item, "values", []),
+      "unlabeled" => Map.get(item, "unlabeled", false)
+    }
+
+    case Map.keys(item) -- ~w(label values unlabeled) do
+      [] ->
+        case label_filter_error(filter) do
+          nil -> {:ok, filter}
+          msg -> {:error, msg}
+        end
+
+      unknown ->
+        {:error, "unknown key(s) #{Enum.join(unknown, ", ")}"}
+    end
+  end
+
+  defp label_filter(_), do: {:error, "must be a table"}
+
+  defp label_filter_error(%{"label" => label, "values" => values, "unlabeled" => unlabeled}) do
+    cond do
+      not non_blank?(label) ->
+        "`label` must be a non-empty string"
+
+      not is_list(values) or not Enum.all?(values, &non_blank?/1) ->
+        "`values` must be a list of choice names"
+
+      not is_boolean(unlabeled) ->
+        "`unlabeled` must be true or false"
+
+      values == [] and not unlabeled ->
+        "matches no doc (no `values` and `unlabeled` is false)"
+
+      true ->
+        nil
+    end
+  end
+
+  defp non_blank?(value), do: is_binary(value) and String.trim(value) != ""
+
+  # shared_with_me and include_labels are only stored when they differ from
+  # their default, so sources configured before the options existed don't
+  # read as changed (which would queue a full pass).
+  defp drive_config(flags, filters) do
+    %{"my_drive" => flags.my_drive, "include" => flags.include}
+    |> then(&if(flags.shared_with_me == true, do: Map.put(&1, "shared_with_me", true), else: &1))
+    |> then(
+      &if(filters == DrivePolicy.default_label_filters(),
+        do: &1,
+        else: Map.put(&1, "include_labels", filters)
+      )
+    )
   end
 
   defp drive_error(%{unknown: [_ | _] = unknown}),

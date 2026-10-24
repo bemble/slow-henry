@@ -4,19 +4,28 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
   returned with `Ingest.Drive`'s field list).
 
   A file is indexable when it is a non-trashed Google Doc, **in scope**, and
-  **allowed by its classification**:
+  **allowed by every label filter**:
 
     * scope — owned by the user (My Drive, when `my_drive` is on), shared
       directly with the user (when `shared_with_me` is on), in one of the
       configured shared drives, or below one of the configured folders;
-    * classification — no Classification label at all, or a label whose
-      selected choice(s) are all allowed (Public / Internal). A label applied
-      without a value is *not* allowed: fail closed.
+    * label filters — `include_labels` of `[drive]` in sources.toml
+      (`label_filters/1`). A doc passes a filter when it carries the label
+      with selected choice(s) all among `values`, or when it doesn't carry
+      the label and `unlabeled` is on. A label applied without a value is
+      *not* allowed: fail closed. By default: no "Classification" label, or
+      classified Public / Internal. No filters: every doc passes.
   """
 
   alias RetrievalNode.Ingest.Drive
 
-  @type classification :: %{label_id: String.t(), field_id: String.t(), allowed: MapSet.t()}
+  @typedoc "A label filter resolved against the Drive Labels API (`Drive.label_filters/1`)."
+  @type label_filter :: %{
+          label_id: String.t(),
+          field_id: String.t() | nil,
+          allowed: MapSet.t(),
+          unlabeled: boolean()
+        }
   @type scope :: %{
           my_drive: boolean(),
           shared_with_me: boolean(),
@@ -25,22 +34,38 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
         }
 
   @max_depth 30
+  @default_label_filters [
+    %{"label" => "Classification", "values" => ["Public", "Internal"], "unlabeled" => true}
+  ]
+
+  @doc "The label filters of a Drive source without `include_labels`."
+  def default_label_filters, do: @default_label_filters
+
+  @doc """
+  The label filters of a Drive source config, as written in sources.toml
+  (`%{"label" => title, "values" => [choice names], "unlabeled" => bool}`).
+  """
+  @spec label_filters(map()) :: [map()]
+  def label_filters(config), do: Map.get(config, "include_labels", @default_label_filters)
 
   @doc "A live (non-trashed) Google Doc."
   def doc?(%{"mimeType" => mime} = file), do: mime == Drive.doc_mime() and file["trashed"] != true
   def doc?(_), do: false
 
-  @doc "Whether the classification label (if any) allows indexing."
-  @spec classification_allowed?(map(), classification()) :: boolean()
-  def classification_allowed?(file, %{label_id: label_id, field_id: field_id, allowed: allowed}) do
+  @doc "Whether the file's labels pass every filter."
+  @spec labels_allowed?(map(), [label_filter()]) :: boolean()
+  def labels_allowed?(file, filters) do
     labels = get_in(file, ["labelInfo", "labels"]) || []
+    Enum.all?(filters, &passes?(labels, &1))
+  end
 
+  defp passes?(labels, %{label_id: label_id, field_id: field_id, allowed: allowed} = filter) do
     case Enum.find(labels, &(&1["id"] == label_id)) do
       nil ->
-        true
+        filter.unlabeled
 
       label ->
-        selection = get_in(label, ["fields", field_id, "selection"]) || []
+        selection = (field_id && get_in(label, ["fields", field_id, "selection"])) || []
         selection != [] and Enum.all?(selection, &MapSet.member?(allowed, &1))
     end
   end
@@ -58,9 +83,9 @@ defmodule RetrievalNode.Ingest.DrivePolicy do
          below?(file["parents"] || [], scope.folders, parents_of, 0, %{}))
   end
 
-  @doc "Indexable = live doc + in scope + classification allowed."
-  def indexable?(file, scope, classification, parents_of) do
-    doc?(file) and classification_allowed?(file, classification) and
+  @doc "Indexable = live doc + in scope + labels allowed."
+  def indexable?(file, scope, filters, parents_of) do
+    doc?(file) and labels_allowed?(file, filters) and
       in_scope?(file, scope, parents_of)
   end
 

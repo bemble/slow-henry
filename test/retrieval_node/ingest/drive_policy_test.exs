@@ -3,7 +3,14 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
 
   alias RetrievalNode.Ingest.{Drive, DrivePolicy}
 
-  @cls %{label_id: "lbl", field_id: "fld", allowed: MapSet.new(["public", "internal"])}
+  @cls [
+    %{
+      label_id: "lbl",
+      field_id: "fld",
+      allowed: MapSet.new(["public", "internal"]),
+      unlabeled: true
+    }
+  ]
   def no_parents(_id), do: []
   @no_parents &__MODULE__.no_parents/1
 
@@ -20,26 +27,50 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
   defp scope(attrs),
     do: Map.merge(%{my_drive: false, drives: MapSet.new(), folders: MapSet.new()}, attrs)
 
-  describe "classification_allowed?/2" do
+  describe "labels_allowed?/2" do
     test "no Classification label: allowed (other labels don't matter)" do
-      assert DrivePolicy.classification_allowed?(doc(), @cls)
+      assert DrivePolicy.labels_allowed?(doc(), @cls)
 
       other = %{"labelInfo" => %{"labels" => [%{"id" => "other", "fields" => %{}}]}}
-      assert DrivePolicy.classification_allowed?(doc(other), @cls)
+      assert DrivePolicy.labels_allowed?(doc(other), @cls)
     end
 
     test "Public or Internal: allowed" do
-      assert DrivePolicy.classification_allowed?(doc(labelled(["public"])), @cls)
-      assert DrivePolicy.classification_allowed?(doc(labelled(["internal"])), @cls)
+      assert DrivePolicy.labels_allowed?(doc(labelled(["public"])), @cls)
+      assert DrivePolicy.labels_allowed?(doc(labelled(["internal"])), @cls)
     end
 
     test "any other choice, or a label without value: not allowed" do
-      refute DrivePolicy.classification_allowed?(doc(labelled(["confidential"])), @cls)
-      refute DrivePolicy.classification_allowed?(doc(labelled(["public", "confidential"])), @cls)
-      refute DrivePolicy.classification_allowed?(doc(labelled([])), @cls)
+      refute DrivePolicy.labels_allowed?(doc(labelled(["confidential"])), @cls)
+      refute DrivePolicy.labels_allowed?(doc(labelled(["public", "confidential"])), @cls)
+      refute DrivePolicy.labels_allowed?(doc(labelled([])), @cls)
 
       no_field = %{"labelInfo" => %{"labels" => [%{"id" => "lbl", "fields" => %{}}]}}
-      refute DrivePolicy.classification_allowed?(doc(no_field), @cls)
+      refute DrivePolicy.labels_allowed?(doc(no_field), @cls)
+    end
+
+    test "every filter must pass; without `unlabeled`, the label is required" do
+      team = %{label_id: "team", field_id: "tf", allowed: MapSet.new(["cloud"]), unlabeled: false}
+      filters = @cls ++ [team]
+
+      team_label = fn choice ->
+        %{"id" => "team", "fields" => %{"tf" => %{"selection" => [choice]}}}
+      end
+
+      with_labels = fn labels -> doc(%{"labelInfo" => %{"labels" => labels}}) end
+
+      refute DrivePolicy.labels_allowed?(doc(), filters)
+      assert DrivePolicy.labels_allowed?(with_labels.([team_label.("cloud")]), filters)
+      refute DrivePolicy.labels_allowed?(with_labels.([team_label.("core")]), filters)
+
+      public = %{"id" => "lbl", "fields" => %{"fld" => %{"selection" => ["public"]}}}
+      secret = %{"id" => "lbl", "fields" => %{"fld" => %{"selection" => ["confidential"]}}}
+      assert DrivePolicy.labels_allowed?(with_labels.([public, team_label.("cloud")]), filters)
+      refute DrivePolicy.labels_allowed?(with_labels.([secret, team_label.("cloud")]), filters)
+    end
+
+    test "no filters: everything passes" do
+      assert DrivePolicy.labels_allowed?(doc(labelled(["confidential"])), [])
     end
   end
 
@@ -95,7 +126,7 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
     end
   end
 
-  test "indexable?/4 needs a live doc, in scope, with an allowed classification" do
+  test "indexable?/4 needs a live doc, in scope, with allowed labels" do
     s = scope(%{my_drive: true})
     mine = %{"owners" => [%{"me" => true}]}
 
@@ -143,7 +174,19 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
     assert stripped =~ "[the doc](https://example.com/doc)"
   end
 
-  test "Drive.parse_classification/3 picks the label, its selection field and allowed choices" do
+  test "label_filters/1 defaults to Classification: Public / Internal or no label" do
+    assert DrivePolicy.label_filters(%{}) == [
+             %{
+               "label" => "Classification",
+               "values" => ["Public", "Internal"],
+               "unlabeled" => true
+             }
+           ]
+
+    assert DrivePolicy.label_filters(%{"include_labels" => []}) == []
+  end
+
+  test "Drive.parse_label_filters/2 resolves each label, its selection field and choices" do
     body = %{
       "labels" => [
         %{"id" => "x", "properties" => %{"title" => "Project"}, "fields" => []},
@@ -167,12 +210,30 @@ defmodule RetrievalNode.Ingest.DrivePolicyTest do
       ]
     }
 
-    assert {:ok, %{label_id: "lbl", field_id: "fld", allowed: allowed}} =
-             Drive.parse_classification(body, "Classification", ~w(Public Internal))
+    filter = fn label, values, unlabeled ->
+      %{"label" => label, "values" => values, "unlabeled" => unlabeled}
+    end
 
-    assert allowed == MapSet.new(["c-pub", "c-int"])
+    assert {:ok, [cls, project]} =
+             Drive.parse_label_filters(body, [
+               filter.("classification", ~w(Public Internal), true),
+               filter.("Project", [], true)
+             ])
 
-    assert {:error, :classification_label_not_found} =
-             Drive.parse_classification(%{"labels" => []}, "Classification", ~w(Public))
+    assert %{label_id: "lbl", field_id: "fld", unlabeled: true, names: ["Public", "internal"]} =
+             cls
+
+    assert cls.allowed == MapSet.new(["c-pub", "c-int"])
+    assert %{label_id: "x", field_id: nil, unlabeled: true} = project
+    assert project.allowed == MapSet.new()
+
+    assert {:error, {:label_not_found, "Team"}} =
+             Drive.parse_label_filters(body, [filter.("Team", ["Cloud"], false)])
+
+    assert {:error, {:label_choices_not_found, "Classification", ["Secret"]}} =
+             Drive.parse_label_filters(body, [filter.("Classification", ~w(Public Secret), true)])
+
+    assert {:error, {:label_without_choices, "Project"}} =
+             Drive.parse_label_filters(body, [filter.("Project", ["A"], false)])
   end
 end

@@ -221,6 +221,47 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
              List.last(saved!(path))
   end
 
+  test "Drive: label filters are editable", %{conn: conn, path: path} do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    render_async(view)
+
+    assert has_element?(view, "#drive-label-0[value='Classification']")
+    assert has_element?(view, "#drive-label-values-0[value='Public, Internal']")
+
+    view |> element("#add-label") |> render_click()
+
+    view
+    |> form("#drive-form", %{
+      "drive" => %{
+        "labels" => %{
+          "0" => %{"label" => "Classification", "values" => "Public", "unlabeled" => "true"},
+          "1" => %{"label" => " Team ", "values" => "Cloud, , Core ", "unlabeled" => "false"}
+        }
+      }
+    })
+    |> render_change()
+
+    view |> element("#review-button") |> render_click()
+    view |> element("#save-button") |> render_click()
+
+    assert %{
+             config: %{
+               "include_labels" => [
+                 %{"label" => "Classification", "values" => ["Public"], "unlabeled" => true},
+                 %{"label" => "Team", "values" => ["Cloud", "Core"], "unlabeled" => false}
+               ]
+             }
+           } = List.last(saved!(path))
+
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    view |> element("button[phx-click=remove_label][phx-value-index='0']") |> render_click()
+    view |> element("button[phx-click=remove_label][phx-value-index='0']") |> render_click()
+    view |> element("#review-button") |> render_click()
+    view |> element("#save-button") |> render_click()
+
+    assert %{config: %{"include_labels" => []}} = List.last(saved!(path))
+  end
+
   test "reports invalid input without saving", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)

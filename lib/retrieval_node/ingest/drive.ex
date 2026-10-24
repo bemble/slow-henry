@@ -4,8 +4,8 @@ defmodule RetrievalNode.Ingest.Drive do
 
   Every call covers My Drive **and** shared drives (`supportsAllDrives` /
   `includeItemsFromAllDrives`), paginates to the end, and asks for the
-  Classification label's values (`includeLabels`) so `Ingest.DrivePolicy` can
-  filter on them. Auth is `Google.OAuth.access_token/0`.
+  values of the filtered labels (`includeLabels`, a comma-separated list of
+  label ids) so `Ingest.DrivePolicy` can filter on them. Auth is `Google.OAuth.access_token/0`.
 
   Results are `{:ok, _}`, `{:snooze, seconds}` on a 429 / rate-limit 403, or
   `{:error, reason}`. Req options are extended by `:drive_req_options`, which
@@ -13,6 +13,7 @@ defmodule RetrievalNode.Ingest.Drive do
   """
 
   alias RetrievalNode.Google.OAuth
+  alias RetrievalNode.Ingest.DrivePolicy
 
   @doc_mime "application/vnd.google-apps.document"
   @folder_mime "application/vnd.google-apps.folder"
@@ -37,14 +38,16 @@ defmodule RetrievalNode.Ingest.Drive do
   All changes since `token`, following `nextPageToken` until Drive hands back
   `newStartPageToken` (the cursor for the next sync).
   """
-  def changes(token, label_id) do
-    params = [
-      pageSize: @page_size,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-      includeLabels: label_id,
-      fields: "nextPageToken,newStartPageToken,changes(fileId,removed,file(#{@file_fields}))"
-    ]
+  def changes(token, label_ids) do
+    params =
+      [
+        pageSize: @page_size,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        includeLabels: label_ids,
+        fields: "nextPageToken,newStartPageToken,changes(fileId,removed,file(#{@file_fields}))"
+      ]
+      |> drop_no_labels()
 
     collect_changes(token, params, [])
   end
@@ -69,54 +72,59 @@ defmodule RetrievalNode.Ingest.Drive do
   # --- listing ---
 
   @doc "Google Docs shared directly with the user (not the contents of shared folders)."
-  def shared_with_me_docs(label_id) do
+  def shared_with_me_docs(label_ids) do
     list_files(
       "sharedWithMe = true and mimeType = '#{@doc_mime}' and trashed = false",
-      label_id,
+      label_ids,
       corpora: "user"
     )
   end
 
   @doc "Google Docs owned by the user (My Drive)."
-  def my_drive_docs(label_id) do
+  def my_drive_docs(label_ids) do
     list_files(
       "'me' in owners and mimeType = '#{@doc_mime}' and trashed = false",
-      label_id,
+      label_ids,
       corpora: "user"
     )
   end
 
   @doc "Google Docs of a shared drive."
-  def shared_drive_docs(drive_id, label_id) do
-    list_files("mimeType = '#{@doc_mime}' and trashed = false", label_id,
+  def shared_drive_docs(drive_id, label_ids) do
+    list_files("mimeType = '#{@doc_mime}' and trashed = false", label_ids,
       corpora: "drive",
       driveId: drive_id
     )
   end
 
   @doc "Google Docs and sub-folders directly inside a folder."
-  def folder_children(folder_id, label_id) do
+  def folder_children(folder_id, label_ids) do
     list_files(
       "'#{escape(folder_id)}' in parents and trashed = false and " <>
         "(mimeType = '#{@doc_mime}' or mimeType = '#{@folder_mime}')",
-      label_id,
+      label_ids,
       corpora: "allDrives"
     )
   end
 
-  defp list_files(q, label_id, extra) do
+  defp list_files(q, label_ids, extra) do
     params =
       [
         q: q,
         pageSize: @page_size,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
-        includeLabels: label_id,
+        includeLabels: label_ids,
         fields: "nextPageToken,files(#{@file_fields})"
-      ] ++ extra
+      ]
+      |> Kernel.++(extra)
+      |> drop_no_labels()
 
     collect_files(params, nil, [])
   end
+
+  # No label filters: no `includeLabels` at all rather than an empty one.
+  defp drop_no_labels(params), do: Enum.reject(params, &(&1 == {:includeLabels, ""}))
 
   defp collect_files(params, page_token, acc) do
     params = if page_token, do: [{:pageToken, page_token} | params], else: params
@@ -211,44 +219,86 @@ defmodule RetrievalNode.Ingest.Drive do
   # --- labels ---
 
   @doc """
-  The published label titled "Classification": its id, the id of its selection
-  field, and the ids of the choices that may be indexed (`allowed` display
-  names, case-insensitive). Errors when the label or allowed choices are
-  missing — the caller must then index nothing.
+  The label filters of a Drive source config (`DrivePolicy.label_filters/1`)
+  resolved against the published labels: for each, the label id, the id of
+  its selection field, the ids of the allowed choices (display names,
+  case-insensitive) and `unlabeled`. Errors when a label, its selection
+  field or a choice is missing — the caller must then index nothing. No
+  filters: no API call.
   """
-  def classification_label(title \\ "Classification", allowed \\ ~w(Public Internal)) do
-    with {:ok, body} <-
-           get(labels_base_url() <> "/v2/labels",
-             view: "LABEL_VIEW_FULL",
-             publishedOnly: true,
-             pageSize: 200
-           ) do
-      parse_classification(body, title, allowed)
+  def label_filters(config \\ %{}) do
+    case DrivePolicy.label_filters(config) do
+      [] ->
+        {:ok, []}
+
+      filters ->
+        with {:ok, body} <-
+               get(labels_base_url() <> "/v2/labels",
+                 view: "LABEL_VIEW_FULL",
+                 publishedOnly: true,
+                 pageSize: 200
+               ) do
+          parse_label_filters(body, filters)
+        end
     end
   end
 
   @doc false
-  def parse_classification(body, title, allowed) do
-    wanted = MapSet.new(allowed, &String.downcase/1)
+  def parse_label_filters(body, filters) do
+    Enum.reduce_while(filters, {:ok, []}, fn filter, {:ok, acc} ->
+      case resolve_filter(body["labels"] || [], filter) do
+        {:ok, resolved} -> {:cont, {:ok, acc ++ [resolved]}}
+        error -> {:halt, error}
+      end
+    end)
+  end
 
-    with %{} = label <-
-           Enum.find(
-             body["labels"] || [],
-             &(downcase(get_in(&1, ["properties", "title"])) == downcase(title))
-           ),
-         %{} = field <- Enum.find(label["fields"] || [], &is_map(&1["selectionOptions"])),
-         choices = get_in(field, ["selectionOptions", "choices"]) || [],
-         ids =
-           for(
-             c <- choices,
-             MapSet.member?(wanted, downcase(get_in(c, ["properties", "displayName"]))),
-             into: MapSet.new(),
-             do: c["id"]
-           ),
-         true <- MapSet.size(ids) > 0 do
-      {:ok, %{label_id: label["id"], field_id: field["id"], allowed: ids}}
-    else
-      _ -> {:error, :classification_label_not_found}
+  defp resolve_filter(labels, %{"label" => title} = filter) do
+    values = filter["values"] || []
+
+    with {:ok, label} <- find_label(labels, title),
+         {:ok, field} <- selection_field(label, title, values),
+         {:ok, kept} <- choices(field, title, values) do
+      {:ok,
+       %{
+         label_id: label["id"],
+         field_id: field && field["id"],
+         allowed: MapSet.new(kept, & &1["id"]),
+         unlabeled: filter["unlabeled"] == true,
+         title: get_in(label, ["properties", "title"]),
+         names: Enum.map(kept, &get_in(&1, ["properties", "displayName"]))
+       }}
+    end
+  end
+
+  defp find_label(labels, title) do
+    case Enum.find(labels, &(downcase(get_in(&1, ["properties", "title"])) == downcase(title))) do
+      nil -> {:error, {:label_not_found, title}}
+      label -> {:ok, label}
+    end
+  end
+
+  # Without values, the filter only looks at whether the label is applied.
+  defp selection_field(label, title, values) do
+    case {Enum.find(label["fields"] || [], &is_map(&1["selectionOptions"])), values} do
+      {nil, []} -> {:ok, nil}
+      {nil, _values} -> {:error, {:label_without_choices, title}}
+      {field, _values} -> {:ok, field}
+    end
+  end
+
+  defp choices(nil, _title, []), do: {:ok, []}
+
+  defp choices(field, title, values) do
+    by_name =
+      Map.new(
+        get_in(field, ["selectionOptions", "choices"]) || [],
+        &{downcase(get_in(&1, ["properties", "displayName"])), &1}
+      )
+
+    case Enum.reject(values, &Map.has_key?(by_name, downcase(&1))) do
+      [] -> {:ok, Enum.map(values, &Map.fetch!(by_name, downcase(&1)))}
+      missing -> {:error, {:label_choices_not_found, title, missing}}
     end
   end
 
