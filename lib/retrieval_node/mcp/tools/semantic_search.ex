@@ -6,7 +6,8 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
   Jira hit with `get_document` (`metadata.doc_id` / `metadata.issue_key`).
 
   Optional `rerank: true` reranks the top RRF candidates with a cross-encoder
-  (experimental; adds latency and is off by default). When active, each result
+  (experimental; adds latency and is off by default). It is ignored when the
+  server has no reranker loaded (`RERANKING` unset). When active, each result
   also carries `fused_score` — the original RRF score — alongside the rerank
   `score`, for comparing the two ranking modes.
   """

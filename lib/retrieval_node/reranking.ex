@@ -22,6 +22,14 @@ defmodule RetrievalNode.Reranking do
   @callback rerank_scores(query :: String.t(), passages :: [String.t()]) :: [float()]
 
   @doc """
+  Whether the implementation can score right now (e.g. its model is loaded).
+  Optional: an impl without it is always available.
+  """
+  @callback available?() :: boolean()
+
+  @optional_callbacks available?: 0
+
+  @doc """
   The configured reranking implementation module.
 
   Raises a clear `ArgumentError` if the configured `:reranking_impl` module
@@ -39,6 +47,17 @@ defmodule RetrievalNode.Reranking do
     end
 
     mod
+  end
+
+  @doc """
+  True unless the configured impl says it cannot score — e.g. `NxServingImpl`
+  when its serving is not started (`RERANKING` unset). Search then keeps the
+  RRF ranking instead of reranking.
+  """
+  @spec available?() :: boolean()
+  def available? do
+    mod = impl()
+    not function_exported?(mod, :available?, 0) or mod.available?()
   end
 
   @doc "Score each passage's relevance to `query`, one raw logit per passage, in order."

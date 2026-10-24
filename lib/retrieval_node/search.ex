@@ -82,8 +82,10 @@ defmodule RetrievalNode.Search do
   defp run(query_text, embedding, opts) do
     top_k = opts |> Keyword.get(:top_k, @default_top_k) |> HybridQuery.clamp_top_k()
 
+    # A rerank asked for while no reranker is available keeps the RRF ranking.
     rerank? =
-      Keyword.get(opts, :rerank, Application.get_env(:retrieval_node, :rerank_default, false))
+      Keyword.get(opts, :rerank, Application.get_env(:retrieval_node, :rerank_default, false)) and
+        Reranking.available?()
 
     query_top_k = if rerank?, do: candidate_pool(top_k), else: top_k
 

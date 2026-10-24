@@ -43,6 +43,11 @@ defmodule RetrievalNode.Reranking.NxServingImpl do
   # bytes is generous for a real question while bounding that cost.
   @max_query_bytes 512
 
+  # The serving only exists when the application started it (RERANKING=true
+  # outside test); without it, batched_run/2 would exit.
+  @impl true
+  def available?, do: Application.get_env(:retrieval_node, :reranking_serving_start, true)
+
   @impl true
   def rerank_scores(query, passages) when is_binary(query) and is_list(passages) do
     truncated_query = truncate_query(query)
