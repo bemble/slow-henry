@@ -5,10 +5,8 @@ defmodule RetrievalNode.Google.OAuth do
   One-time consent, from the UI's Connections page (`RetrievalNodeWeb.ConnectionsLive`),
   yields a **refresh token**; from then on `access_token/0` trades it for
   short-lived access tokens, cached in `:persistent_term` until a minute
-  before expiry. The redirect goes to the UI itself, at the endpoint's URL
-  (`http://localhost:<port>/google/callback`, or `PHX_HOST` in prod): Desktop
-  clients accept any loopback redirect, other hosts need a "Web application"
-  client with that redirect URI registered.
+  before expiry. Desktop clients accept any loopback redirect, so the redirect
+  goes to the UI itself (`http://localhost:<port>/google/callback`).
 
   The client comes from the environment (`config/runtime.exs`):
 
