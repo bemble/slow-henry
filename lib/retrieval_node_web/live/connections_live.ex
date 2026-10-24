@@ -24,6 +24,10 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   When the browser can't reach the redirect (the server runs on another
   machine, so `localhost` is the wrong host), the page that fails to load
   still carries the code in its URL: paste it in the form below instead.
+  When Google refuses the redirect altogether (a Desktop client and
+  `PHX_HOST` set), the same form takes a refresh token obtained on a local
+  run with the same client (`google_refresh_token` in its `secrets.toml`):
+  it is checked against Google, then stored like one from a consent.
 
   `state` is a `Phoenix.Token`, so the callback needs no session and works
   whichever host name the page was opened with.
@@ -179,10 +183,14 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
      )}
   end
 
-  def handle_event("paste", %{"url" => url}, socket) do
+  # Either the redirected URL (its query has the code) or a refresh token.
+  def handle_event("paste", %{"url" => pasted}, socket) do
+    pasted = String.trim(pasted)
+
     params =
-      case URI.parse(String.trim(url)) do
+      case URI.parse(pasted) do
         %URI{query: query} when is_binary(query) -> URI.decode_query(query)
+        %URI{scheme: nil} when pasted != "" -> %{"refresh_token" => pasted}
         _ -> %{}
       end
 
@@ -229,12 +237,23 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
     end
   end
 
+  defp exchange(%{"refresh_token" => refresh}) do
+    case OAuth.verify_refresh_token(refresh) do
+      :ok -> {:ok, refresh}
+      {:error, {:google_oauth, _status, error}} -> {:error, {:refused_token, error}}
+      error -> error
+    end
+  end
+
   defp exchange(_params), do: {:error, :no_code}
 
   defp describe({:denied, error}), do: "Google returned \"#{error}\" (access not granted)."
   defp describe(:expired), do: "This authorization link expired: start again."
   defp describe(:invalid), do: "The state doesn't match a link from this server: start again."
   defp describe(:no_code), do: "No authorization code in that URL."
+
+  defp describe({:refused_token, error}),
+    do: "Google refused that token (#{error}): it must come from this same OAuth client."
 
   defp describe({:google_oauth, _status, error}),
     do: "Google refused the code (#{error}): start again."
@@ -343,11 +362,18 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
           When this server runs on another machine, Google's redirect to <code>localhost</code>
           fails to load. Copy that page's URL from the address bar and paste it here.
         </p>
+        <p class="my-2 text-sm opacity-70">
+          Google blocks the request ("This app's request is invalid")? Connect from a local run
+          of Slow Henry with the same OAuth client, then paste the
+          <code>google_refresh_token</code>
+          from its <code>secrets.toml</code>
+          here instead.
+        </p>
         <.form for={@paste_form} id="paste-redirect" phx-submit="paste" class="flex gap-2">
           <div class="flex-1">
             <.input
               field={@paste_form[:url]}
-              placeholder="http://localhost:4000/google/callback?state=…&code=…"
+              placeholder="http://localhost:4000/google/callback?state=…&code=… or 1//…"
               autocomplete="off"
             />
           </div>

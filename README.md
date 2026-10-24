@@ -309,16 +309,18 @@ One-time setup:
 > **On a server (Docker, `PHX_HOST` set), authorize Google from a local run first.**
 > The redirect then goes to `http://<PHX_HOST>:<PORT>/google/callback`, which a
 > Desktop client refuses ("Access blocked: This app's request is invalid", and the
-> paste form on `/connections` can't help either). Instead:
+> pasted redirect URL can't help). Instead:
 >
 > 1. Start the app locally (`mix phx.server`) with the same `GOOGLE_CLIENT_ID` /
->    `GOOGLE_CLIENT_SECRET`, and connect Google from `http://localhost:4000/connections`.
-> 2. Copy `google_refresh_token` from the local `data/secrets.toml` into the server's
->    `.env` as `GOOGLE_REFRESH_TOKEN`, along with the same client id and secret, and
->    restart it.
+>    `GOOGLE_CLIENT_SECRET` as the server, and connect Google from
+>    `http://localhost:4000/connections`.
+> 2. Copy `google_refresh_token` from the local `data/secrets.toml`, and paste it on
+>    the server's `/connections` page, under **The browser didn't come back here?**.
+>    It is checked with Google, then stored in the server's `secrets.toml`.
 >
-> The token is tied to that OAuth client: keep both together. With an **Internal**
-> consent screen it doesn't expire (unless revoked or unused for 6 months).
+> The token is tied to that OAuth client: it only works with the same client id and
+> secret. With an **Internal** consent screen it doesn't expire (unless revoked or
+> unused for 6 months).
 
 ### GitHub
 

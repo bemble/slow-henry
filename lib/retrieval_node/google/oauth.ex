@@ -92,6 +92,18 @@ defmodule RetrievalNode.Google.OAuth do
     end
   end
 
+  @doc """
+  Checks a refresh token obtained elsewhere (e.g. on a local run with the
+  same client) by trading it once for an access token. Nothing is stored.
+  """
+  def verify_refresh_token(refresh) do
+    case token_request(grant_type: "refresh_token", refresh_token: refresh) do
+      {:ok, %{"access_token" => _}} -> :ok
+      {:ok, _} -> {:error, :bad_token_response}
+      error -> error
+    end
+  end
+
   @doc "A valid access token, refreshed when the cached one is about to expire."
   @spec access_token() :: {:ok, String.t()} | {:error, term()}
   def access_token do

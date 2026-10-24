@@ -137,6 +137,28 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     assert RetrievalNode.Secrets.get("google_refresh_token") == "rtok-123"
   end
 
+  test "pasting a refresh token checks it with Google, then stores it", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/connections")
+
+    html = view |> form("#paste-redirect", %{"url" => "  1//local-token "}) |> render_submit()
+
+    assert html =~ "The token is stored"
+    refute html =~ "1//local-token"
+    assert RetrievalNode.Secrets.get("google_refresh_token") == "1//local-token"
+  end
+
+  test "a refresh token Google refuses is not stored", %{conn: conn} do
+    Req.Test.stub(__MODULE__, fn conn ->
+      conn |> Plug.Conn.put_status(400) |> Req.Test.json(%{"error" => "invalid_grant"})
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/connections")
+    html = view |> form("#paste-redirect", %{"url" => "1//other-client"}) |> render_submit()
+
+    assert html =~ "Google refused that token (invalid_grant)"
+    refute RetrievalNode.Secrets.get("google_refresh_token")
+  end
+
   test "a forged state or a denial is refused without exchanging", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/google/callback?#{[state: "forged", code: "c0de"]}")
     assert render(view) =~ "doesn&#39;t match a link from this server"
