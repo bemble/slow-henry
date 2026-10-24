@@ -19,8 +19,9 @@ exposed to clients as **MCP tools** over HTTP.
   resolved Jira issues are chunked and embedded into a single store, so one
   query ranks across all of them.
 - **Hybrid retrieval:** pgvector cosine similarity (HNSW) + Postgres full-text
-  search (GIN), fused with RRF (k=60). Optional `source`/`repo`/`lang` filters
-  are applied *before* ranking so filtered searches stay accurate.
+  search (GIN), fused with RRF (k=60). Optional filters (`source`, `repo`,
+  `lang`, PR people, Jira type / people / parent) are applied *before* ranking
+  so filtered searches stay accurate.
 - **Incremental ingestion:** per-source Oban sync jobs stage changed content in
   `pending_chunks` and advance a watermark; one `SourceOwner` process per source
   chunks, embeds and upserts it. Re-runs are no-ops. Lockfiles, minified
@@ -37,14 +38,14 @@ exposed to clients as **MCP tools** over HTTP.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;
-  - `/sources/edit` — pick the GitHub repos and the Google Drive scope to
-    index (writes `sources.toml`);
+  - `/sources/edit` — pick the GitHub repos, the Jira projects and the Google
+    Drive scope to index (writes `sources.toml`);
   - `/sources/:id` — the indexed files of a source and the chunks of each file;
   - `/search` — the same hybrid search as `semantic_search`, with scores;
   - `/connections` — the app version, how to add the MCP server to a client
     (Claude Code, `.mcp.json`, VS Code…), embedding backend status (Ollama
     reachability, model, share of the index on the current embedding setup),
-    and GitHub / Google Drive authorization.
+    and GitHub / Jira / Google Drive authorization.
 
 ## Stack
 
@@ -257,8 +258,9 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), Jira projects are added by key, `exclude` patterns and Drive ids are plain text fields (a pasted Drive
-folder URL is turned into its id), and a review step shows what will change
+URL), Jira projects are added by key with their options, `exclude` patterns
+and Drive ids are plain text fields (a pasted Drive folder URL is turned into
+its id), and a review step shows what will change
 before saving. Saving rewrites the file without its comments, and is refused
 if the file changed on disk since the page was opened.
 
@@ -309,16 +311,36 @@ case-insensitive) and `parent` (an epic's key: its children); `get_document`
 returns an issue's text by its key. Issues are synced hourly, from the last
 resolution date seen; changing an option re-syncs the whole project.
 
-Credentials: create an **API token** at
-[id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-(it reads what your account can read), then enter the site
-(`https://my-site.atlassian.net`), your Atlassian email and the token on
-`/connections`. They are checked against Jira, then stored in
-`DATA_DIR/secrets.toml` (the token is never displayed); **Disconnect** forgets
-them. A scoped token (read-only, `read:jira-work`) works too, with
-`https://api.atlassian.com/ex/jira/<cloudId>` as the site.
+Credentials: an Atlassian **API token**, read with your account's access.
+
+1. At [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens),
+   choose **Create API token with scopes** (recommended: read-only), app
+   **Jira**, with these scopes:
+
+   | Scope | Used for |
+   | --- | --- |
+   | `read:jira-work` | searching the issues and reading their fields |
+   | `read:jira-user` | `/rest/api/3/myself`, the check on `/connections` |
+   | `read:me`, `read:account` | your account's profile |
+
+   A classic token (**Create API token**, no scopes) works too, with
+   everything your account can do.
+2. On `/connections`, enter the site (`https://my-site.atlassian.net`; a
+   pasted Jira URL is fine), your Atlassian account's email and the token.
+   They are checked against Jira, then stored in `DATA_DIR/secrets.toml` (the
+   token is never displayed); **Disconnect** forgets them.
+
+Atlassian only accepts a token with scopes through
+`https://api.atlassian.com/ex/jira/<cloudId>`, not the site: when the site
+refuses the token, the check retries there by itself (the cloud id comes from
+the site) and stores that URL, keeping the site for links to issues. A refused
+token shows Jira's reason (e.g. `scope does not match`).
+
 `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`, when all set, override the
-stored ones. Without credentials, Jira syncs are cancelled.
+stored ones; with a token with scopes, `JIRA_BASE_URL` must then be the
+`https://api.atlassian.com/ex/jira/<cloudId>` URL (the site's
+`/_edge/tenant_info` gives the cloud id). Without credentials, Jira syncs are
+cancelled.
 
 ### Google Drive
 
