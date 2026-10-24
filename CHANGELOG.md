@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/bemble/slow-henry/compare/v0.4.0...v0.5.0) (2026-10-24)
+
+
+### Features
+
+* get_document MCP tool returns Drive doc and Jira issue text ([c8794cd](https://github.com/bemble/slow-henry/commit/c8794cd43b6e95f810111b8db0f6bfc08c9a5922))
+* get_document MCP tool returns Drive doc and Jira issue text ([58d2a3c](https://github.com/bemble/slow-henry/commit/58d2a3ce0415753d204a698a78d5379f1f321478))
+* index PR authors and reviewers, filter semantic_search by them ([4ce4979](https://github.com/bemble/slow-henry/commit/4ce4979d1d53100ed264668009437cf6bed6eeba))
+* index PR authors and reviewers, filter semantic_search by them ([62d6f45](https://github.com/bemble/slow-henry/commit/62d6f45693ea3214685e72cd55e25cdce7297330))
+
+
+### Bug Fixes
+
+* always redirect Google OAuth to localhost, whatever PHX_HOST says ([7383c4a](https://github.com/bemble/slow-henry/commit/7383c4a52ccb925608736034785b3245155ae8aa))
+* always redirect Google OAuth to localhost, whatever PHX_HOST says ([d3f3a36](https://github.com/bemble/slow-henry/commit/d3f3a360ba957173b272d29e9efbdf2495ac4d74))
+
 ## [0.4.0](https://github.com/bemble/slow-henry/compare/v0.3.0...v0.4.0) (2026-10-23)
 
 
