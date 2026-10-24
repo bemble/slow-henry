@@ -27,7 +27,7 @@ pull_requests = true   # merged PRs: description, comments, reviews (default fal
 
 # Jira: the resolved issues (status category Done) of a project, by its key:
 # summary, description, type and status, plus the fields turned on below.
-# Connect Jira (site, email, API token) on the Connections page first.
+# Connect Jira (site, email, API token) on the Settings page first.
 [[jira]]
 project = "CLOUD"
 assignee = true   # also index the assignee (default false)
@@ -43,7 +43,7 @@ parent = true     # also index the parent issue, e.g. the epic (default false)
 # `values`, or when it doesn't carry the label and `unlabeled = true`.
 # Without `include_labels`, the filter is the "Classification" one below;
 # `include_labels = []` indexes every doc in scope.
-# Authorize once from the UI's Connections page (/connections).
+# Authorize once from the UI's Settings page (/settings).
 [drive]
 my_drive = true
 shared_with_me = false

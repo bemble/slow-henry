@@ -1,4 +1,4 @@
-defmodule RetrievalNodeWeb.ConnectionsLiveTest do
+defmodule RetrievalNodeWeb.SettingsLiveTest do
   use RetrievalNodeWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -88,7 +88,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
   test "connect, come back with a code: the token is stored in secrets.toml, never shown",
        %{conn: conn} do
-    {:ok, view, html} = live(conn, ~p"/connections")
+    {:ok, view, html} = live(conn, ~p"/settings?tab=google")
     assert html =~ "not authorized"
     state = state_from(view)
 
@@ -100,7 +100,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     assert html =~ "Classification: Public / Internal / no label"
     assert RetrievalNode.Secrets.get("google_refresh_token") == "rtok-123"
 
-    {:ok, view, html} = live(conn, ~p"/connections")
+    {:ok, view, html} = live(conn, ~p"/settings?tab=google")
     assert html =~ "Token stored in"
     assert html =~ "secrets.toml"
 
@@ -110,8 +110,38 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     assert RetrievalNode.Secrets.get("google_refresh_token") == nil
   end
 
+  test "is the Settings entry of the menu", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/settings")
+    assert html =~ ~r{<h1[^>]*>\s*Settings\s*</h1>}
+    assert has_element?(view, "header a.btn-active[href='/settings'] .hero-cog-6-tooth")
+  end
+
+  test "one tab per service, GitHub first, AI last; a dot says what is connected",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+
+    assert view |> element("#settings-tabs") |> render() =~
+             ~r/GitHub.*Jira.*Google Drive.*AI/s
+
+    assert has_element?(view, "#tab-github[aria-selected=true]")
+    assert has_element?(view, "#github[role=tabpanel]")
+    refute has_element?(view, "#google")
+    refute has_element?(view, "#mcp")
+    assert has_element?(view, "#tab-google .status-neutral")
+
+    view |> element("#tab-ai") |> render_click()
+    assert_patch(view, ~p"/settings?tab=ai")
+    assert has_element?(view, "#mcp")
+    assert has_element?(view, "#ollama")
+    refute has_element?(view, "#github")
+
+    # An unknown tab falls back to the first one.
+    {:ok, view, _html} = live(conn, ~p"/settings?tab=nope")
+    assert has_element?(view, "#tab-github[aria-selected=true]")
+  end
+
   test "shows the app version and how to add the MCP server", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/connections?from=somewhere")
+    {:ok, view, _html} = live(conn, ~p"/settings?tab=ai&from=somewhere")
     version = to_string(Application.spec(:retrieval_node, :vsn))
 
     assert has_element?(view, "#app-version", "Slow Henry v#{version}")
@@ -126,7 +156,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
   end
 
   test "pasting the redirected URL finishes the same way", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/connections")
+    {:ok, view, _html} = live(conn, ~p"/settings?tab=google")
     state = state_from(view)
 
     html =
@@ -156,7 +186,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       refresh_token: "1//env"
     )
 
-    {:ok, _view, html} = live(conn, ~p"/connections")
+    {:ok, _view, html} = live(conn, ~p"/settings?tab=google")
     assert html =~ "GOOGLE_REFRESH_TOKEN"
     assert html =~ "overrides"
     refute html =~ "disconnect-google"
@@ -164,7 +194,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
   test "without a client id, explains what to configure", %{conn: conn} do
     Application.put_env(:retrieval_node, :google, [])
-    {:ok, _view, html} = live(conn, ~p"/connections")
+    {:ok, _view, html} = live(conn, ~p"/settings?tab=google")
     assert html =~ "GOOGLE_CLIENT_ID"
     refute html =~ "connect-google"
   end
@@ -184,7 +214,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       )
 
       Application.put_env(:retrieval_node, :embedding_req_options,
-        plug: {Req.Test, RetrievalNodeWeb.ConnectionsLiveTest.Ollama},
+        plug: {Req.Test, RetrievalNodeWeb.SettingsLiveTest.Ollama},
         retry: false
       )
 
@@ -196,7 +226,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     end
 
     defp ollama(models) do
-      Req.Test.stub(RetrievalNodeWeb.ConnectionsLiveTest.Ollama, fn conn ->
+      Req.Test.stub(RetrievalNodeWeb.SettingsLiveTest.Ollama, fn conn ->
         case conn.request_path do
           "/api/version" ->
             Req.Test.json(conn, %{"version" => "0.40.9"})
@@ -214,7 +244,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     test "connected: version, model and a round trip", %{conn: conn} do
       ollama(["nomic-embed-text:latest"])
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=ai")
       html = render_async(view)
 
       assert html =~ "connected"
@@ -224,17 +254,17 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     test "model not pulled is flagged with the command to run", %{conn: conn} do
       ollama(["llama3:latest"])
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=ai")
       assert render_async(view) =~ "ollama pull nomic-embed-text"
     end
 
     test "unreachable", %{conn: conn} do
       Req.Test.stub(
-        RetrievalNodeWeb.ConnectionsLiveTest.Ollama,
+        RetrievalNodeWeb.SettingsLiveTest.Ollama,
         &Req.Test.transport_error(&1, :econnrefused)
       )
 
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=ai")
       html = render_async(view)
       assert html =~ "unreachable"
       assert html =~ "econnrefused"
@@ -261,7 +291,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       })
     end
 
-    {:ok, _view, html} = live(conn, ~p"/connections")
+    {:ok, _view, html} = live(conn, ~p"/settings?tab=ai")
     assert html =~ ~r/Index:\s*<strong>2<\/strong> of 4 chunks/
     assert html =~ "mix rn.reembed"
     assert html =~ "bumblebee:old"
@@ -269,7 +299,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
   end
 
   test "without Ollama, says embeddings run on the CPU", %{conn: conn} do
-    {:ok, _view, html} = live(conn, ~p"/connections")
+    {:ok, _view, html} = live(conn, ~p"/settings?tab=ai")
     assert html =~ "Computed in-process on the CPU"
   end
 
@@ -322,7 +352,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     end
 
     test "device flow: shows the code, stores the token, shows the account", %{conn: conn} do
-      {:ok, view, html} = live(conn, ~p"/connections")
+      {:ok, view, html} = live(conn, ~p"/settings")
       assert html =~ "not connected"
 
       view |> element("#connect-github") |> render_click()
@@ -355,7 +385,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
         end
       end)
 
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings")
       view |> element("#connect-github") |> render_click()
       send(view.pid, :poll_github)
 
@@ -365,7 +395,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     test "disconnect forgets the stored token", %{conn: conn} do
       :ok = Secrets.put("github_refresh_token", "ghr_0")
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings")
       # The account lookup (and its token refresh) has finished.
       assert render_async(view) =~ "@octocat"
 
@@ -377,7 +407,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     test "without a client id, explains what to configure", %{conn: conn} do
       Application.put_env(:retrieval_node, :github, [])
-      {:ok, _view, html} = live(conn, ~p"/connections")
+      {:ok, _view, html} = live(conn, ~p"/settings")
       assert html =~ "GITHUB_CLIENT_ID"
     end
   end
@@ -444,7 +474,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     end
 
     test "checks the credentials, stores them, never shows the token", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=jira")
       html = submit_jira(view, "good")
 
       assert html =~ "Ada Lovelace"
@@ -454,7 +484,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
       assert Secrets.get("jira_api_token") == "good"
 
       # Still connected on the next visit, and Disconnect forgets everything.
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=jira")
       assert render_async(view) =~ "Ada Lovelace"
       view |> element("#disconnect-jira") |> render_click()
       assert Secrets.get("jira_api_token") == nil
@@ -463,7 +493,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
 
     test "a token with scopes goes through the gateway, the site kept for links",
          %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=jira")
       assert submit_jira(view, "scoped") =~ "Ada Lovelace"
 
       assert Secrets.get("jira_base_url") == "https://api.atlassian.com/ex/jira/c1d"
@@ -472,7 +502,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
     end
 
     test "rejected credentials are reported with Jira's reason, and not stored", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=jira")
       submit_jira(view, "bad")
 
       error = view |> element("#jira-error") |> render()
@@ -487,7 +517,7 @@ defmodule RetrievalNodeWeb.ConnectionsLiveTest do
         api_token: "good"
       )
 
-      {:ok, view, _html} = live(conn, ~p"/connections")
+      {:ok, view, _html} = live(conn, ~p"/settings?tab=jira")
       assert render_async(view) =~ "Ada Lovelace"
       assert has_element?(view, "#jira", "JIRA_API_TOKEN")
       refute has_element?(view, "#jira-form")

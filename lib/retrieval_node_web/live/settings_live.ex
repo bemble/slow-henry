@@ -1,9 +1,10 @@
-defmodule RetrievalNodeWeb.ConnectionsLive do
+defmodule RetrievalNodeWeb.SettingsLive do
   @moduledoc """
-  The app's version, how to add its MCP endpoint to a client, and the
-  external services Slow Henry talks to: the Ollama embedding server (when
-  `OLLAMA_ENDPOINT` is set), the GitHub App, the Jira API token, and Google
-  Drive authorization, entirely from the UI.
+  The app's version, and one tab (`?tab=`) per external service Slow Henry
+  talks to: the GitHub App, the Jira API token, Google Drive authorization,
+  then "AI": how to add its MCP endpoint to a client, and the embedding
+  backend (the Ollama server when `OLLAMA_ENDPOINT` is set). Each tab shows
+  whether its service is ready.
 
   Jira credentials (site, email, API token) are checked against Jira's
   `/myself` before being stored (`RetrievalNode.Jira.Credentials`), through
@@ -43,6 +44,8 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   alias RetrievalNode.Retrieval.Source
   alias RetrievalNode.SourcesFile
 
+  @tabs ~w(github jira google ai)
+
   @state_salt "google-oauth-state"
   @state_max_age 15 * 60
 
@@ -52,7 +55,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
     socket =
       assign(socket,
-        page_title: "Connections",
+        page_title: "Settings",
         result: nil,
         paste_form: to_form(%{"url" => ""}),
         ollama?: ollama?,
@@ -189,6 +192,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   def handle_params(params, uri, socket) do
     socket =
       assign(socket,
+        tab: tab(socket.assigns.live_action, params["tab"]),
         mcp_url: mcp_url(uri),
         configured: OAuth.configured?(),
         authorized: OAuth.authorized?(),
@@ -200,7 +204,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         # The exchange must happen once: on the connected mount only, never on
         # the static render (a code can be redeemed a single time).
         if connected?(socket) do
-          {:noreply, socket |> complete(params) |> push_patch(to: ~p"/connections")}
+          {:noreply, socket |> complete(params) |> push_patch(to: ~p"/settings?tab=google")}
         else
           {:noreply, assign(socket, auth_url: nil)}
         end
@@ -279,6 +283,11 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
     {:noreply, socket |> complete(params) |> assign(paste_form: to_form(%{"url" => ""}))}
   end
+
+  # Google comes back to /google/callback: show its tab.
+  defp tab(:callback, _tab), do: "google"
+  defp tab(_action, tab) when tab in @tabs, do: tab
+  defp tab(_action, _tab), do: "github"
 
   defp auth_url(socket) do
     if socket.assigns.configured do
@@ -371,9 +380,9 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} active={:connections}>
+    <Layouts.app flash={@flash} active={:settings}>
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 class="text-2xl font-semibold">Connections</h1>
+        <h1 class="text-2xl font-semibold">Settings</h1>
         <a
           id="app-version"
           href={"https://github.com/bemble/slow-henry/releases/tag/v#{version()}"}
@@ -384,100 +393,160 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
         </a>
       </div>
 
-      <.mcp_section url={@mcp_url} />
+      <div role="tablist" id="settings-tabs" class="tabs tabs-border overflow-x-auto flex-nowrap">
+        <.tab_link
+          :for={{tab, label, icon, ready} <- tab_items(assigns)}
+          tab={tab}
+          active={@tab}
+          label={label}
+          icon={icon}
+          ready={ready}
+        />
+      </div>
 
-      <section id="ollama" class="space-y-2">
-        <h2 class="text-lg font-semibold">Embeddings</h2>
-        <p :if={!@ollama?} class="text-sm opacity-70">
-          Computed in-process on the CPU. Set <code>OLLAMA_ENDPOINT</code>
-          to use an Ollama server instead (see the README).
-        </p>
-        <.ollama_status :if={@ollama?} status={@ollama} />
-        <.index_profiles profile={@profile} profiles={@profiles} />
-      </section>
+      <.github_section
+        :if={@tab == "github"}
+        github={@github}
+        device={@device}
+        error={@github_error}
+      />
 
-      <.github_section github={@github} device={@device} error={@github_error} />
+      <.jira_section :if={@tab == "jira"} jira={@jira} form={@jira_form} error={@jira_error} />
 
-      <.jira_section jira={@jira} form={@jira_form} error={@jira_error} />
-
-      <div>
-        <h2 class="text-lg font-semibold">Google Drive</h2>
+      <section :if={@tab == "google"} id="google" role="tabpanel" class="space-y-3">
         <p class="text-sm opacity-70">
           Read-only access to your Drive and its labels, for the Drive source in sources.toml.
         </p>
-      </div>
 
-      <div :if={!@configured} role="alert" class="alert alert-warning">
-        <.icon name="hero-exclamation-triangle" class="size-5" />
-        <span>
-          Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>
-          (a "Desktop app" OAuth client) in the server's environment, then restart it.
-        </span>
-      </div>
-
-      <div :if={@configured} class="flex flex-wrap items-center gap-3">
-        <span class={["badge", if(@authorized, do: "badge-success", else: "badge-ghost")]}>
-          {if @authorized, do: "authorized", else: "not authorized"}
-        </span>
-        <a :if={@auth_url} id="connect-google" href={@auth_url} class="btn btn-primary btn-sm">
-          <.icon name="hero-link" class="size-4" />
-          {if @authorized, do: "Reconnect Google Drive", else: "Connect Google Drive"}
-        </a>
-        <span :if={!@auth_url} class="loading loading-spinner loading-sm"></span>
-        <button
-          :if={@token_source == :secrets}
-          id="disconnect-google"
-          phx-click="disconnect_google"
-          data-confirm="Forget the stored Google token? Drive sync stops until you reconnect."
-          class="btn btn-ghost btn-sm"
-        >
-          Disconnect
-        </button>
-      </div>
-      <p :if={@token_source} id="token-source" class="text-xs opacity-70">
-        <span :if={@token_source == :secrets}>
-          Token stored in <code>{RetrievalNode.Secrets.path()}</code>.
-        </span>
-        <span :if={@token_source == :env}>
-          Token from <code>GOOGLE_REFRESH_TOKEN</code> (environment), which overrides
-          <code>{RetrievalNode.Secrets.path()}</code>.
-        </span>
-      </p>
-
-      <div :if={@result && @result[:error]} id="auth-error" role="alert" class="alert alert-error">
-        <.icon name="hero-x-circle" class="size-5" />
-        <span>{@result.error}</span>
-      </div>
-
-      <div :if={@result && @result[:stored]} id="auth-result" class="space-y-3">
-        <div role="alert" class="alert alert-success">
-          <.icon name="hero-check-circle" class="size-5" />
-          <span>Authorized. The token is stored and used from now on, across restarts.</span>
+        <div :if={!@configured} role="alert" class="alert alert-warning">
+          <.icon name="hero-exclamation-triangle" class="size-5" />
+          <span>
+            Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>
+            (a "Desktop app" OAuth client) in the server's environment, then restart it.
+          </span>
         </div>
 
-        <.label_check labels={@result.labels} />
-      </div>
-
-      <details :if={@configured} class="rounded-box border border-base-300 p-4">
-        <summary class="cursor-pointer text-sm font-medium">
-          The browser didn't come back here?
-        </summary>
-        <p class="my-2 text-sm opacity-70">
-          When this server runs on another machine, Google's redirect to <code>localhost</code>
-          fails to load. Copy that page's URL from the address bar and paste it here.
+        <div :if={@configured} class="flex flex-wrap items-center gap-3">
+          <span class={["badge", if(@authorized, do: "badge-success", else: "badge-ghost")]}>
+            {if @authorized, do: "authorized", else: "not authorized"}
+          </span>
+          <a :if={@auth_url} id="connect-google" href={@auth_url} class="btn btn-primary btn-sm">
+            <.icon name="hero-link" class="size-4" />
+            {if @authorized, do: "Reconnect Google Drive", else: "Connect Google Drive"}
+          </a>
+          <span :if={!@auth_url} class="loading loading-spinner loading-sm"></span>
+          <button
+            :if={@token_source == :secrets}
+            id="disconnect-google"
+            phx-click="disconnect_google"
+            data-confirm="Forget the stored Google token? Drive sync stops until you reconnect."
+            class="btn btn-ghost btn-sm"
+          >
+            Disconnect
+          </button>
+        </div>
+        <p :if={@token_source} id="token-source" class="text-xs opacity-70">
+          <span :if={@token_source == :secrets}>
+            Token stored in <code>{RetrievalNode.Secrets.path()}</code>.
+          </span>
+          <span :if={@token_source == :env}>
+            Token from <code>GOOGLE_REFRESH_TOKEN</code> (environment), which overrides
+            <code>{RetrievalNode.Secrets.path()}</code>.
+          </span>
         </p>
-        <.form for={@paste_form} id="paste-redirect" phx-submit="paste" class="flex gap-2">
-          <div class="flex-1">
-            <.input
-              field={@paste_form[:url]}
-              placeholder="http://localhost:4000/google/callback?state=…&code=…"
-              autocomplete="off"
-            />
+
+        <div :if={@result && @result[:error]} id="auth-error" role="alert" class="alert alert-error">
+          <.icon name="hero-x-circle" class="size-5" />
+          <span>{@result.error}</span>
+        </div>
+
+        <div :if={@result && @result[:stored]} id="auth-result" class="space-y-3">
+          <div role="alert" class="alert alert-success">
+            <.icon name="hero-check-circle" class="size-5" />
+            <span>Authorized. The token is stored and used from now on, across restarts.</span>
           </div>
-          <div><.button>Finish</.button></div>
-        </.form>
-      </details>
+
+          <.label_check labels={@result.labels} />
+        </div>
+
+        <details :if={@configured} class="rounded-box border border-base-300 p-4">
+          <summary class="cursor-pointer text-sm font-medium">
+            The browser didn't come back here?
+          </summary>
+          <p class="my-2 text-sm opacity-70">
+            When this server runs on another machine, Google's redirect to <code>localhost</code>
+            fails to load. Copy that page's URL from the address bar and paste it here.
+          </p>
+          <.form for={@paste_form} id="paste-redirect" phx-submit="paste" class="flex gap-2">
+            <div class="flex-1">
+              <.input
+                field={@paste_form[:url]}
+                placeholder="http://localhost:4000/google/callback?state=…&code=…"
+                autocomplete="off"
+              />
+            </div>
+            <div><.button>Finish</.button></div>
+          </.form>
+        </details>
+      </section>
+
+      <div :if={@tab == "ai"} id="ai" role="tabpanel" class="space-y-6">
+        <.mcp_section url={@mcp_url} />
+
+        <section id="ollama" class="space-y-2">
+          <h2 class="text-lg font-semibold">Embeddings</h2>
+          <p :if={!@ollama?} class="text-sm opacity-70">
+            Computed in-process on the CPU. Set <code>OLLAMA_ENDPOINT</code>
+            to use an Ollama server instead (see the README).
+          </p>
+          <.ollama_status :if={@ollama?} status={@ollama} />
+          <.index_profiles profile={@profile} profiles={@profiles} />
+        </section>
+      </div>
     </Layouts.app>
+    """
+  end
+
+  # {tab, label, icon, ready?}: ready is nil when there is nothing to connect.
+  defp tab_items(assigns) do
+    [
+      {"github", "GitHub", "hero-code-bracket", assigns.github.source != nil},
+      {"jira", "Jira", "hero-ticket", assigns.jira.source != nil},
+      {"google", "Google Drive", "hero-folder", assigns.authorized},
+      {"ai", "AI", "hero-sparkles", ai_ready(assigns)}
+    ]
+  end
+
+  # In-process embeddings need nothing; Ollama is ready once probed fine.
+  defp ai_ready(%{ollama?: false}), do: nil
+  defp ai_ready(%{ollama: %{reachable: true} = status}), do: ok?(status)
+  defp ai_ready(%{ollama: %{reachable: false}}), do: false
+  defp ai_ready(_assigns), do: nil
+
+  attr :tab, :string, required: true
+  attr :active, :string, required: true
+  attr :label, :string, required: true
+  attr :icon, :string, required: true
+  attr :ready, :any, default: nil
+
+  defp tab_link(assigns) do
+    ~H"""
+    <.link
+      id={"tab-#{@tab}"}
+      role="tab"
+      aria-selected={to_string(@tab == @active)}
+      patch={~p"/settings?tab=#{@tab}"}
+      class={["tab gap-2 whitespace-nowrap", @tab == @active && "tab-active"]}
+    >
+      <.icon name={@icon} class="size-4" />
+      {@label}
+      <span
+        :if={@ready != nil}
+        class={["status", if(@ready, do: "status-success", else: "status-neutral")]}
+        title={if @ready, do: "Connected", else: "Not connected"}
+      >
+      </span>
+    </.link>
     """
   end
 
@@ -533,8 +602,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   defp github_section(assigns) do
     ~H"""
-    <section id="github" class="space-y-2">
-      <h2 class="text-lg font-semibold">GitHub</h2>
+    <section id="github" role="tabpanel" class="space-y-3">
       <p class="text-sm opacity-70">
         A GitHub App's read-only token, for merged pull requests and private repo clones.
       </p>
@@ -600,8 +668,7 @@ defmodule RetrievalNodeWeb.ConnectionsLive do
 
   defp jira_section(assigns) do
     ~H"""
-    <section id="jira" class="space-y-2">
-      <h2 class="text-lg font-semibold">Jira</h2>
+    <section id="jira" role="tabpanel" class="space-y-3">
       <p class="text-sm opacity-70">
         An Atlassian API token, for the <code>[[jira]]</code>
         projects in sources.toml. Create one at

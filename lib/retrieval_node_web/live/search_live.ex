@@ -120,7 +120,7 @@ defmodule RetrievalNodeWeb.SearchLive do
         <.icon name="hero-exclamation-triangle" class="size-5" />
         <span>
           The embedding server is unreachable: these results use full-text ranking only.
-          See <.link navigate={~p"/connections"} class="link">Connections</.link>.
+          See <.link navigate={~p"/settings"} class="link">Settings</.link>.
         </span>
       </div>
 

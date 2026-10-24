@@ -105,7 +105,7 @@ defmodule RetrievalNode.Ingest.Jira do
   end
 
   @doc """
-  Checks credentials typed on the Connections page: `myself/1`, and when an
+  Checks credentials typed on the Settings page: `myself/1`, and when an
   Atlassian site refuses them, the same through the scoped-token gateway
   (`https://api.atlassian.com/ex/jira/<cloudId>`) — a token "with scopes" is
   only accepted there. Returns the display name and the credentials that

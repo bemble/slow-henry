@@ -22,7 +22,7 @@ defmodule RetrievalNode.Ingest.Workers.JiraSync do
   batch.
 
   A 429 returns `{:snooze, seconds}` (parsed from `Retry-After`) so rate
-  limits don't burn attempts. Without credentials (Connections page) the job
+  limits don't burn attempts. Without credentials (Settings page) the job
   is cancelled; the next hourly run tries again.
   """
   use Oban.Worker,

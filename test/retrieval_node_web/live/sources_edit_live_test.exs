@@ -92,6 +92,8 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
     key
   end
 
+  defp open_tab(view, tab), do: view |> element("#tab-#{tab}") |> render_click()
+
   defp saved!(path) do
     {:ok, entries, _hash} = SourcesFile.load_with_hash(path)
     entries
@@ -99,14 +101,38 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
 
   test "shows the file's repos by section and resolves Drive ids", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
-    html = render_async(view)
+    render_async(view)
 
+    assert has_element?(view, "#tab-github.tab-active")
     assert has_element?(view, "#github-repos-form input[value=adr]")
-    assert has_element?(view, "#other-repos-form input[value='file:///srv/git/local.git']")
-    assert html =~ "Engineering"
-    # The picker marks what is already selected.
+    # The dropdown opens once something is typed and marks what is selected.
+    refute has_element?(view, "#repo-matches")
+    view |> form("#repo-search", %{query: "acme"}) |> render_change()
     assert has_element?(view, "#match-acme-adr button", "Added")
     assert has_element?(view, "#match-acme-web button", "Add")
+    render_click(view, "close_search")
+    refute has_element?(view, "#repo-matches")
+    refute has_element?(view, "#other-repos-form")
+
+    open_tab(view, "other")
+    assert_patch(view, ~p"/sources/edit?tab=other")
+    assert has_element?(view, "#other-repos-form input[value='file:///srv/git/local.git']")
+
+    assert open_tab(view, "drive") =~ "Engineering"
+  end
+
+  test "opens the tab named in the URL and keeps edits across tabs", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit?tab=jira")
+    render_async(view)
+    assert has_element?(view, "#tab-jira.tab-active")
+    refute has_element?(view, "#tab-review .status")
+
+    view |> form("#add-jira-0", %{project: "cloud"}) |> render_submit()
+    assert has_element?(view, "#tab-review .status")
+
+    open_tab(view, "drive")
+    open_tab(view, "jira")
+    assert has_element?(view, "#jira-projects-form", "CLOUD")
   end
 
   test "filters, adds a GitHub repo and saves the file", %{conn: conn, path: path} do
@@ -167,6 +193,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
     })
     |> render_change()
 
+    open_tab(view, "other")
     local = key(view, "local")
     view |> element("#repo-#{local} button[title^=Remove]") |> render_click()
 
@@ -191,6 +218,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
   test "Jira: adds a project by key and saves it", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)
+    open_tab(view, "jira")
 
     view |> form("#add-jira-0", %{project: " cloud "}) |> render_submit()
     assert has_element?(view, "#jira-projects-form", "CLOUD")
@@ -217,6 +245,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
   test "Drive: a pasted folder URL becomes its id", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)
+    open_tab(view, "drive")
 
     view |> element("#add-include") |> render_click()
 
@@ -250,6 +279,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
   test "Drive: label filters are editable", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)
+    open_tab(view, "drive")
 
     assert has_element?(view, "#drive-label-0[value='Classification']")
     assert has_element?(view, "#drive-label-values-0[value='Public, Internal']")
@@ -279,7 +309,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
              }
            } = List.last(saved!(path))
 
-    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    {:ok, view, _html} = live(conn, ~p"/sources/edit?tab=drive")
     view |> element("button[phx-click=remove_label][phx-value-index='0']") |> render_click()
     view |> element("button[phx-click=remove_label][phx-value-index='0']") |> render_click()
     view |> element("#review-button") |> render_click()
@@ -291,6 +321,7 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
   test "reports invalid input without saving", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)
+    open_tab(view, "other")
 
     view |> form("#add-url-0", %{url: "https://git.example.com/x/adr.git"}) |> render_submit()
     # The name was made unique; force a clash.

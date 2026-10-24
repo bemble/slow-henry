@@ -2,7 +2,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   @moduledoc """
   Indexes the merged pull requests of a git source that has
   `pull_requests = true` in sources.toml (off by default), through the
-  GitHub App token connected on the Connections page (`GitHub.OAuth`).
+  GitHub App token connected on the Settings page (`GitHub.OAuth`).
 
   Each merged PR becomes one document of the git source — title, author,
   merge date, URL, description, then the human comments and reviews — under

@@ -4,10 +4,10 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   picked from the token's list (`Ingest.GitHub.list_repos/0`), other git
   URLs, Jira projects (by key), and the Google Drive scope.
 
-  It edits the file the watcher applies. Review shows `SourcesFile.plan/1`;
-  Save writes the file with `SourcesFile.save/3` — refused when the file
-  changed on disk since the page loaded — then has the watcher apply it
-  right away.
+  One tab per kind of source (`?tab=`), plus a Review tab showing
+  `SourcesFile.plan/1`; edits made in any tab are kept until saved. Save
+  writes the file with `SourcesFile.save/3` — refused when the file changed
+  on disk since the page loaded — then has the watcher apply it right away.
   """
   use RetrievalNodeWeb, :live_view
 
@@ -21,6 +21,8 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   # Picker rows shown at once; the search narrows the rest.
   @max_matches 50
 
+  @tabs ~w(github other jira drive review)
+
   @impl true
   def mount(_params, _session, socket) do
     socket =
@@ -29,6 +31,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         page_title: "Edit sources",
         query: "",
         review: nil,
+        dirty: false,
         drive_info: %{},
         url_form: 0,
         jira_form: 0,
@@ -141,6 +144,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    tab = if params["tab"] in @tabs, do: params["tab"], else: "github"
+    socket = assign(socket, tab: tab)
+
+    {:noreply,
+     if(tab == "review", do: assign(socket, review: plan_review(socket.assigns)), else: socket)}
+  end
+
+  @impl true
   def handle_async(:github, {:ok, {:ok, repos}}, socket),
     do: {:noreply, assign(socket, github: {:ok, repos})}
 
@@ -159,6 +171,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   @impl true
   def handle_event("search", %{"query" => query}, socket),
     do: {:noreply, assign(socket, query: query)}
+
+  def handle_event("close_search", _params, socket),
+    do: {:noreply, assign(socket, query: "")}
 
   def handle_event("change", params, socket) do
     repos = Enum.map(socket.assigns.repos, &update_repo(&1, params["repos"][&1.key]))
@@ -268,15 +283,12 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     {:noreply, edited(socket, drive: %{drive | include: include})}
   end
 
-  def handle_event("review", _params, socket) do
-    review =
-      case entries(socket.assigns) do
-        {:ok, entries} -> {:ok, SourcesFile.plan(entries), SourcesFile.encode(entries)}
-        {:error, msg} -> {:error, msg}
-      end
+  # Submitting a form (Enter in a field) opens the Review tab.
+  def handle_event("review", _params, %{assigns: %{tab: "review"}} = socket),
+    do: {:noreply, assign(socket, review: plan_review(socket.assigns))}
 
-    {:noreply, assign(socket, review: review)}
-  end
+  def handle_event("review", _params, socket),
+    do: {:noreply, push_patch(socket, to: ~p"/sources/edit?tab=review")}
 
   def handle_event("save", _params, socket) do
     %{path: path, hash: hash} = socket.assigns
@@ -311,8 +323,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     end
   end
 
+  defp plan_review(assigns) do
+    case entries(assigns) do
+      {:ok, entries} -> {:ok, SourcesFile.plan(entries), SourcesFile.encode(entries)}
+      {:error, msg} -> {:error, msg}
+    end
+  end
+
   # Any edit invalidates the review.
-  defp edited(socket, assigns), do: assign(socket, [{:review, nil} | assigns])
+  defp edited(socket, assigns), do: assign(socket, [review: nil, dirty: true] ++ assigns)
 
   defp edit_repo(socket, key, fun) do
     repos = Enum.map(socket.assigns.repos, &if(&1.key == key, do: fun.(&1), else: &1))
@@ -529,9 +548,24 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         </span>
       </div>
 
-      <div :if={!@load_error} class="space-y-6">
-        <section id="github" class="space-y-3">
-          <h2 class="text-lg font-semibold">GitHub repositories</h2>
+      <div :if={!@load_error} class="space-y-4">
+        <div role="tablist" id="source-tabs" class="tabs tabs-border overflow-x-auto flex-nowrap">
+          <.tab_link
+            :for={{tab, label, icon, count} <- tab_items(assigns)}
+            tab={tab}
+            active={@tab}
+            label={label}
+            icon={icon}
+            count={count}
+            dirty={tab == "review" && @dirty}
+          />
+        </div>
+
+        <section :if={@tab == "github"} id="github" role="tabpanel" class="space-y-3">
+          <p class="text-sm opacity-70">
+            Repositories your GitHub connection can read. Each one is cloned and indexed;
+            check <em>Merged PRs</em> to index its merged pull requests too.
+          </p>
           <.github_picker
             github={@github}
             query={@query}
@@ -555,11 +589,10 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           </form>
         </section>
 
-        <section id="other" class="space-y-3">
-          <h2 class="text-lg font-semibold">Other repositories</h2>
+        <section :if={@tab == "other"} id="other" role="tabpanel" class="space-y-3">
           <p class="text-sm opacity-70">
             Any git URL (<code>https://</code>, <code>ssh://</code>, <code>file://</code>…).
-            A public GitHub repo missing from the list above can be added here by its URL.
+            A public GitHub repo missing from the GitHub list can be added here by its URL.
           </p>
           <form
             :if={@other_rows != []}
@@ -584,16 +617,18 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           </form>
         </section>
 
-        <section id="jira" class="space-y-3">
-          <h2 class="text-lg font-semibold">Jira projects</h2>
+        <section :if={@tab == "jira"} id="jira" role="tabpanel" class="space-y-3">
           <p class="text-sm opacity-70">
             Resolved issues (status category Done) of each project, by its key: summary,
             description, type and status, plus the fields checked below.
-            <span :if={!@jira_connected}>
-              <.link navigate={~p"/connections"} class="link">Connect Jira</.link>
+          </p>
+          <div :if={!@jira_connected} id="jira-not-connected" role="alert" class="alert alert-warning">
+            <.icon name="hero-exclamation-triangle" class="size-5" />
+            <span>
+              <.link navigate={~p"/settings"} class="link">Connect Jira</.link>
               first: projects don't sync without an API token.
             </span>
-          </p>
+          </div>
           <form
             :if={@jira != []}
             id="jira-projects-form"
@@ -604,9 +639,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             <div
               :for={row <- @jira}
               id={"jira-#{row.key}"}
-              class="flex items-center gap-4 rounded-box border border-base-300 px-3 py-2"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-box border border-base-300 px-3 py-2"
             >
-              <span class="w-48 font-mono font-medium">{row.project}</span>
+              <span class="w-32 font-mono font-medium">{row.project}</span>
               <.input
                 type="checkbox"
                 id={"#{row.key}-active"}
@@ -643,19 +678,72 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           </form>
         </section>
 
-        <section id="drive" class="space-y-3">
-          <h2 class="text-lg font-semibold">Google Drive</h2>
+        <section :if={@tab == "drive"} id="drive" role="tabpanel" class="space-y-3">
           <.drive_form drive={@drive} info={@drive_info} />
         </section>
 
-        <section id="review" class="space-y-3 border-t border-base-300 pt-4">
-          <button id="review-button" type="button" phx-click="review" class="btn btn-primary">
-            <.icon name="hero-eye" class="size-4" /> Review changes
-          </button>
+        <section :if={@tab == "review"} id="review" role="tabpanel" class="space-y-3">
           <.review review={@review} />
+          <button
+            :if={!@review}
+            id="review-again"
+            type="button"
+            phx-click="review"
+            class="btn btn-sm"
+          >
+            <.icon name="hero-arrow-path" class="size-4" /> Review again
+          </button>
         </section>
+
+        <div
+          :if={@tab != "review"}
+          class="flex items-center justify-end gap-3 border-t border-base-300 pt-4"
+        >
+          <span :if={@dirty} class="text-sm opacity-70">Unsaved changes</span>
+          <.link
+            id="review-button"
+            patch={~p"/sources/edit?tab=review"}
+            class={["btn", if(@dirty, do: "btn-primary", else: "btn-ghost")]}
+          >
+            <.icon name="hero-eye" class="size-4" /> Review changes
+          </.link>
+        </div>
       </div>
     </Layouts.app>
+    """
+  end
+
+  defp tab_items(assigns) do
+    [
+      {"github", "GitHub", "hero-code-bracket", length(assigns.github_rows)},
+      {"other", "Other git", "hero-server-stack", length(assigns.other_rows)},
+      {"jira", "Jira", "hero-ticket", length(assigns.jira)},
+      {"drive", "Google Drive", "hero-folder", if(assigns.drive, do: "on", else: "off")},
+      {"review", "Review & save", "hero-eye", nil}
+    ]
+  end
+
+  attr :tab, :string, required: true
+  attr :active, :string, required: true
+  attr :label, :string, required: true
+  attr :icon, :string, required: true
+  attr :count, :any, default: nil
+  attr :dirty, :boolean, default: false
+
+  defp tab_link(assigns) do
+    ~H"""
+    <.link
+      id={"tab-#{@tab}"}
+      role="tab"
+      aria-selected={to_string(@tab == @active)}
+      patch={~p"/sources/edit?tab=#{@tab}"}
+      class={["tab gap-2 whitespace-nowrap", @tab == @active && "tab-active"]}
+    >
+      <.icon name={@icon} class="size-4" />
+      {@label}
+      <span :if={@count} class="badge badge-sm badge-ghost">{@count}</span>
+      <span :if={@dirty} class="status status-warning" title="Unsaved changes"></span>
+    </.link>
     """
   end
 
@@ -682,7 +770,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   defp github_picker(%{github: :not_connected} = assigns) do
     ~H"""
     <p id="github-not-connected" class="text-sm opacity-70">
-      <.link navigate={~p"/connections"} class="link">Connect GitHub</.link>
+      <.link navigate={~p"/settings"} class="link">Connect GitHub</.link>
       to pick repositories from a list.
     </p>
     """
@@ -696,53 +784,63 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     """
   end
 
+  # A dropdown under the search field, open while it holds text.
   defp github_picker(assigns) do
     ~H"""
-    <div class="rounded-box border border-base-300">
-      <form id="repo-search" phx-change="search" phx-submit="search" class="p-2">
-        <.input
-          type="search"
-          name="query"
-          value={@query}
-          placeholder="Filter repositories"
-          phx-debounce="150"
-          autocomplete="off"
-        />
+    <div id="repo-picker" class="relative" phx-click-away={@query != "" && "close_search"}>
+      <form id="repo-search" phx-change="search" phx-submit="search">
+        <label class="input w-full">
+          <.icon name="hero-magnifying-glass" class="size-4 opacity-50" />
+          <input
+            type="search"
+            name="query"
+            value={@query}
+            placeholder="Search your repositories to add one"
+            phx-debounce="150"
+            autocomplete="off"
+            class="grow"
+          />
+        </label>
       </form>
-      <ul id="repo-matches" class="max-h-80 overflow-y-auto">
+      <ul
+        :if={String.trim(@query) != ""}
+        id="repo-matches"
+        class="absolute z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-box border border-base-300 bg-base-100 shadow-lg"
+      >
         <li
           :for={repo <- @matches}
           id={"match-#{String.replace(repo.full_name, ~r/[^A-Za-z0-9_-]/, "-")}"}
-          class="flex items-center gap-2 border-t border-base-300 px-3 py-1.5"
+          class="border-b border-base-300 last:border-b-0"
         >
-          <div class="grow">
-            <span class="font-medium">{repo.full_name}</span>
-            <.icon :if={repo.private} name="hero-lock-closed" class="size-3 opacity-60" />
-            <div :if={repo.description} class="text-xs opacity-60">
-              {RetrievalNodeWeb.Format.truncate(repo.description, 100)}
-            </div>
-          </div>
           <button
             type="button"
             phx-click="toggle_github"
             phx-value-full_name={repo.full_name}
-            class={[
-              "btn btn-xs",
-              MapSet.member?(@selected, String.downcase(repo.full_name)) && "btn-active"
-            ]}
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-base-200"
           >
+            <div class="grow">
+              <span class="font-medium">{repo.full_name}</span>
+              <.icon :if={repo.private} name="hero-lock-closed" class="size-3 opacity-60" />
+              <div :if={repo.description} class="text-xs opacity-60">
+                {RetrievalNodeWeb.Format.truncate(repo.description, 100)}
+              </div>
+            </div>
             <%= if MapSet.member?(@selected, String.downcase(repo.full_name)) do %>
-              <.icon name="hero-check" class="size-4" /> Added
+              <span class="badge badge-success badge-sm gap-1">
+                <.icon name="hero-check" class="size-3" /> Added
+              </span>
             <% else %>
-              <.icon name="hero-plus" class="size-4" /> Add
+              <span class="badge badge-ghost badge-sm gap-1">
+                <.icon name="hero-plus" class="size-3" /> Add
+              </span>
             <% end %>
           </button>
         </li>
-        <li :if={@matches == []} class="border-t border-base-300 px-3 py-2 text-sm opacity-60">
+        <li :if={@matches == []} class="px-3 py-2 text-sm opacity-60">
           No repository matches.
         </li>
         <li :if={@more > 0} class="border-t border-base-300 px-3 py-2 text-sm opacity-60">
-          {@more} more — refine the filter.
+          {@more} more — refine the search.
         </li>
       </ul>
     </div>
@@ -849,7 +947,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
   defp drive_form(%{drive: nil} = assigns) do
     ~H"""
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-3 rounded-box border border-dashed border-base-300 p-4">
       <span class="text-sm opacity-70">Google Drive is not indexed.</span>
       <button id="enable-drive" type="button" phx-click="enable_drive" class="btn btn-sm">
         <.icon name="hero-plus" class="size-4" /> Index Google Drive
@@ -860,8 +958,10 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
 
   defp drive_form(assigns) do
     ~H"""
-    <form id="drive-form" phx-change="change" phx-submit="review" class="space-y-2">
-      <div class="flex flex-wrap gap-6">
+    <form id="drive-form" phx-change="change" phx-submit="review" class="space-y-6">
+      <fieldset class="space-y-2">
+        <h3 class="font-semibold">Scope</h3>
+        <div class="flex flex-wrap gap-6">
         <.input
           type="checkbox"
           id="drive-my-drive"
@@ -883,13 +983,16 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           value={@drive.active}
           label="Active"
         />
-      </div>
+        </div>
+      </fieldset>
 
-      <div class="text-xs opacity-70">
-        Label filters (all must pass): a doc passes one when its selected choice(s) are all
-        listed, or when it doesn't carry the label and "Docs without it" is checked.
-        No filter: every doc in scope is indexed.
-      </div>
+      <fieldset class="space-y-2">
+        <h3 class="font-semibold">Label filters</h3>
+        <p class="text-xs opacity-70">
+          All must pass: a doc passes one when its selected choice(s) are all
+          listed, or when it doesn't carry the label and "Docs without it" is checked.
+          No filter: every doc in scope is indexed.
+        </p>
       <div :for={{l, i} <- Enum.with_index(@drive.labels)} class="flex items-start gap-2">
         <div class="w-56">
           <.input
@@ -929,10 +1032,11 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       <button id="add-label" type="button" phx-click="add_label" class="btn btn-ghost btn-xs">
         <.icon name="hero-plus" class="size-4" /> Add a label filter
       </button>
+      </fieldset>
 
-      <div class="text-xs opacity-70">
-        Shared drives and folders (paste an id or the folder's URL)
-      </div>
+      <fieldset class="space-y-2">
+        <h3 class="font-semibold">Shared drives and folders</h3>
+        <p class="text-xs opacity-70">Paste an id or the folder's URL.</p>
       <div :for={{id, i} <- Enum.with_index(@drive.include)} class="flex items-start gap-2">
         <div class="w-96">
           <.input
@@ -954,15 +1058,17 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           <.icon name="hero-x-mark" class="size-4" />
         </button>
       </div>
-      <div class="flex gap-2">
-        <button id="add-include" type="button" phx-click="add_include" class="btn btn-ghost btn-xs">
-          <.icon name="hero-plus" class="size-4" /> Add a shared drive or folder
-        </button>
+      <button id="add-include" type="button" phx-click="add_include" class="btn btn-ghost btn-xs">
+        <.icon name="hero-plus" class="size-4" /> Add a shared drive or folder
+      </button>
+      </fieldset>
+
+      <div class="border-t border-base-300 pt-3">
         <button
           id="disable-drive"
           type="button"
           phx-click="disable_drive"
-          class="btn btn-ghost btn-xs ml-auto"
+          class="btn btn-ghost btn-sm text-error"
         >
           <.icon name="hero-trash" class="size-4" /> Stop indexing Google Drive
         </button>

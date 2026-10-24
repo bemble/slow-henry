@@ -1,7 +1,7 @@
 defmodule RetrievalNode.GitHub.OAuth do
   @moduledoc """
   GitHub user-to-server tokens from a **GitHub App**, through the OAuth
-  device flow: the Connections page shows a code, the user enters it at
+  device flow: the Settings page shows a code, the user enters it at
   github.com/login/device, and the app polls until GitHub hands back the
   tokens. No redirect, so it works from a headless server too.
 
@@ -166,7 +166,7 @@ defmodule RetrievalNode.GitHub.OAuth do
 
   # --- account ---
 
-  @doc "The login of the token's user, for the Connections page."
+  @doc "The login of the token's user, for the Settings page."
   def login do
     with {:ok, token} <- access_token() do
       case Req.get(req(), url: @api <> "/user", auth: {:bearer, token}) do

@@ -1,7 +1,7 @@
 defmodule RetrievalNode.Ingest.GitHub do
   @moduledoc """
   Merged pull requests of a GitHub repo, through GitHub's GraphQL API with
-  the GitHub App user token (`GitHub.OAuth`, connected from the Connections
+  the GitHub App user token (`GitHub.OAuth`, connected from the Settings
   page).
 
   `merged_prs_page/3` walks a search sorted by `updated` ascending, so a
