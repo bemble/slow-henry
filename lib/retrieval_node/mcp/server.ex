@@ -1,6 +1,6 @@
 defmodule RetrievalNode.MCP.Server do
   @moduledoc """
-  The MCP server for Retrieval Node — exposes the four retrieval tools over the
+  The MCP server for Retrieval Node — exposes the five retrieval tools over the
   `streamable_http` transport (mounted at `/mcp`, see `RetrievalNodeWeb.MCPPlug`).
 
   Tools call only the `Search`/`Ingest` contexts (and `Ingest.GitMirror` for git
@@ -17,6 +17,7 @@ defmodule RetrievalNode.MCP.Server do
   component(RetrievalNode.MCP.Tools.SemanticSearch)
   component(RetrievalNode.MCP.Tools.Grep)
   component(RetrievalNode.MCP.Tools.GetFile)
+  component(RetrievalNode.MCP.Tools.GetDocument)
   component(RetrievalNode.MCP.Tools.ListRepos)
 
   @impl true
