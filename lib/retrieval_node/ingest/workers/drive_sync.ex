@@ -286,7 +286,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
              source: "drive",
              source_id: source.id,
              source_type: "drive_folder",
-             lang: nil,
+             lang: "markdown",
              natural_key: "drive:#{file["id"]}",
              content_hash: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower),
              raw_content: text,

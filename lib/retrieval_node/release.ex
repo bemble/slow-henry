@@ -1,6 +1,7 @@
 defmodule RetrievalNode.Release do
   @moduledoc """
-  Release tasks for running Ecto migrations without Mix.
+  Release tasks: Ecto migrations without Mix, and the re-chunk after a
+  chunker change.
 
   Mix isn't available in a `mix release` build, so this is the entrypoint
   ops invokes from the release script instead of `mix ecto.migrate`:
@@ -10,6 +11,8 @@ defmodule RetrievalNode.Release do
   See `scripts/deploy.sh` (runs this between the symlink switch and
   `systemctl restart`) and `deploy/README.md`.
   """
+
+  alias RetrievalNode.Ingest.Rechunk
 
   @app :retrieval_node
 
@@ -22,6 +25,19 @@ defmodule RetrievalNode.Release do
     end
 
     :ok
+  end
+
+  @doc """
+  Re-chunks everything that isn't tree-sitter code after a chunker change
+  (`RetrievalNode.Ingest.Rechunk`). It enqueues jobs, so it runs in the live
+  node rather than through `eval`:
+
+      bin/retrieval_node rpc "RetrievalNode.Release.rechunk()"
+  """
+  @spec rechunk() :: :ok
+  def rechunk do
+    {:ok, summary} = Rechunk.run()
+    IO.puts("rechunk: #{inspect(summary)}")
   end
 
   @spec rollback(module(), integer()) :: :ok

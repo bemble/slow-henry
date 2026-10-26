@@ -12,6 +12,10 @@ defmodule RetrievalNode.Chunking do
       brace-balance chunker with no NIF involvement. The pipeline's fallback impl
       and the `:test`-env default (keeps the suite NIF-free).
 
+  Everything that isn't code — markdown, and the verbatim languages (config
+  files, plain text) — always goes to `RetrievalNode.Chunking.MarkdownImpl`,
+  whatever the configured impl, so prod and test chunk it the same way.
+
   `chunk/2` is **pure dispatch** — it delegates to the configured impl and returns
   whatever that impl returns, including `{:error, reason}`. It does NOT itself
   fall back. The fallback *orchestration* — deciding which error reasons re-run
@@ -44,6 +48,8 @@ defmodule RetrievalNode.Chunking do
           optional(:end_byte) => non_neg_integer()
         }
 
+  alias RetrievalNode.Chunking.MarkdownImpl
+
   @doc "Split `source` (in `language`) into chunks, or return a tagged error."
   @callback chunk(source :: String.t(), language :: language) ::
               {:ok, [chunk]} | {:error, atom() | {atom(), term()}}
@@ -67,7 +73,7 @@ defmodule RetrievalNode.Chunking do
   @optional_callbacks chunk_with_graph: 2
 
   @spec chunk(String.t(), language) :: {:ok, [chunk]} | {:error, atom() | {atom(), term()}}
-  def chunk(source, language), do: impl().chunk(source, language)
+  def chunk(source, language), do: impl_for(language).chunk(source, language)
 
   @doc """
   Dispatch to `impl().chunk_with_graph/2` when the configured impl exports it;
@@ -78,7 +84,7 @@ defmodule RetrievalNode.Chunking do
           {:ok, %{chunks: [chunk], entities: [Extractor.entity()], references: [Extractor.ref()]}}
           | {:error, atom() | {atom(), term()}}
   def chunk_with_graph(source, language) do
-    impl = impl()
+    impl = impl_for(language)
 
     # Code.ensure_loaded?/1 is required: function_exported?/3 is false for a
     # not-yet-loaded module, which would silently drop graph data until some
@@ -106,6 +112,12 @@ defmodule RetrievalNode.Chunking do
 
   @spec allowed_languages() :: [language]
   def allowed_languages, do: impl().allowed_languages()
+
+  # Markdown and the verbatim languages always go to MarkdownImpl, which has
+  # no graph to extract (chunk_with_graph/2 wraps its chunks).
+  defp impl_for(language) do
+    if language in MarkdownImpl.allowed_languages(), do: MarkdownImpl, else: impl()
+  end
 
   @spec impl() :: module()
   def impl,

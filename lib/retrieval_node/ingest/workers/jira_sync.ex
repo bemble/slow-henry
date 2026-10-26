@@ -143,7 +143,7 @@ defmodule RetrievalNode.Ingest.Workers.JiraSync do
         source: "jira",
         source_id: source.id,
         source_type: "jira_project",
-        lang: nil,
+        lang: "markdown",
         natural_key: "jira:#{issue.key}",
         content_hash: :crypto.hash(:sha256, issue.text) |> Base.encode16(case: :lower),
         raw_content: issue.text,

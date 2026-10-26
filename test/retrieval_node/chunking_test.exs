@@ -33,5 +33,22 @@ defmodule RetrievalNode.ChunkingTest do
       assert {:ok, %{chunks: ^chunks, entities: [], references: []}} =
                Chunking.chunk_with_graph(source, "ruby")
     end
+
+    test "markdown goes to MarkdownImpl, with no graph" do
+      assert {:ok, %{chunks: [%{kind: "markdown_section"}], entities: [], references: []}} =
+               Chunking.chunk_with_graph("# T\n\ntext\n", "markdown")
+    end
+  end
+
+  describe "chunk/2" do
+    test "markdown and verbatim languages go to MarkdownImpl, whatever the configured impl" do
+      assert {:ok, [%{kind: "markdown_section"}]} = Chunking.chunk("# T\n\ntext\n", "markdown")
+      assert {:ok, [%{kind: "config_block"}]} = Chunking.chunk("a: 1\n", "yaml")
+    end
+
+    test "other languages go to the configured impl" do
+      # HeuristicImpl in the test env.
+      assert {:ok, [%{kind: "heuristic_block"}]} = Chunking.chunk("def foo\n  1\nend\n", "ruby")
+    end
   end
 end

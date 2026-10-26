@@ -757,4 +757,27 @@ defmodule RetrievalNode.Ingest.FileIngestTest do
       assert Repo.aggregate(SecretFinding, :count, :id) == 1
     end
   end
+
+  describe "markdown" do
+    test "a merged PR is chunked by MarkdownImpl, under its name rather than its path",
+         %{source: source} do
+      # FakeImpl is configured: markdown must not go through it.
+      force_chunk({:error, :should_not_be_called})
+
+      raw =
+        seed_row(source, %{
+          lang: "markdown",
+          natural_key: "repo:#{source.id}:pulls/12",
+          raw_content: "# Fix login\n\nPull request #12\n\n## Proposed change\n\nRetry once.\n",
+          metadata: %{"path" => "pulls/12", "pr" => 12, "name" => "PR #12: Fix login"}
+        })
+
+      assert {:ok, %{action: :indexed, chunks: 1}} = FileIngest.apply(raw, [])
+
+      assert [chunk] = Repo.all(from(c in Chunk, where: c.source_id == ^source.id))
+      assert chunk.context_breadcrumb == "PR #12: Fix login"
+      assert chunk.content =~ "## Proposed change\n\nRetry once."
+      assert chunk.parse_status == :ok
+    end
+  end
 end

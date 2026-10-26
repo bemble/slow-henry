@@ -120,6 +120,49 @@ defmodule RetrievalNode.Ingest.Workers.RepoSyncTest do
     assert state.cursor["last_sha"] == head
   end
 
+  test "stages a language for docs and config files, none for unknown code", ctx do
+    files = [
+      {"README.md", "# Readme\n"},
+      {"Guide.MDX", "# Guide\n"},
+      {"LICENSE", "MIT\n"},
+      {"notes.txt", "notes\n"},
+      {"deploy.yml", "a: 1\n"},
+      {"package.json", "{}\n"},
+      {"main.tf", "x = 1\n"},
+      {"Dockerfile", "FROM scratch\n"},
+      {"Dockerfile.prod", "FROM scratch\n"},
+      {".gitignore", "_build\n"},
+      {"CMakeLists.txt", "project(x)\n"},
+      {"app.ex", "defmodule A, do: nil\n"},
+      {"main.c", "int main(void) { return 0; }\n"},
+      {"main.py", "x = 1\n"}
+    ]
+
+    commit(ctx.src, files)
+    assert :ok = perform_job(RepoSync, %{"source_id" => ctx.source.id})
+
+    langs =
+      Repo.all(from p in PendingChunk, where: p.status == "raw", select: {p.metadata, p.lang})
+      |> Map.new(fn {metadata, lang} -> {metadata["path"], lang} end)
+
+    assert langs == %{
+             "README.md" => "markdown",
+             "Guide.MDX" => "markdown",
+             "LICENSE" => "markdown",
+             "notes.txt" => "text",
+             "deploy.yml" => "yaml",
+             "package.json" => "json",
+             "main.tf" => "terraform",
+             "Dockerfile" => "dockerfile",
+             "Dockerfile.prod" => "dockerfile",
+             ".gitignore" => "ignore",
+             "CMakeLists.txt" => nil,
+             "app.ex" => "elixir",
+             "main.c" => nil,
+             "main.py" => "python"
+           }
+  end
+
   for {label, attrs} <- [inactive: %{active: false}, denied: %{policy: :deny}] do
     test "a #{label} source is cancelled before any work", ctx do
       commit(ctx.src, [{"a.py", "def a(): pass\n"}])
@@ -277,7 +320,7 @@ defmodule RetrievalNode.Ingest.Workers.RepoSyncTest do
   end
 
   test "indexable?/2 keeps regular source files" do
-    assert RepoSync.indexable?("lib/app.ex", "defmodule App do\nend\n")
+    assert RepoSync.indexable?("app.ex", "defmodule App do\nend\n")
     assert RepoSync.indexable?("docs/lock.md", "# Locking\n")
     refute RepoSync.indexable?("frontend/package-lock.json", "{}")
     refute RepoSync.indexable?("infra/.terraform.lock.hcl", "provider {}")
