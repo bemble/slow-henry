@@ -35,6 +35,10 @@ defmodule RetrievalNode.Search do
       type (e.g. `"Bug"`), whose assignee or reporter display name contains
       the text, or under that parent key (an epic)
     * `:top_k` — result count (default 20)
+    * `:graph` — boolean; adds `HybridQuery`'s third entity-mention leg (default
+      from config `:graph_leg_default`, currently `false`). Opt-in because its
+      query cost is paid on every request whether or not it improves relevance.
+      Exposed on the MCP tool layer as the `graph` field on `semantic_search`.
     * `:embedding` — a precomputed 384-float query vector; when given, skips the
       embedding step (used by tests and callers that already hold an embedding)
     * `:rerank` — boolean; defaults from config `:rerank_default` (currently
@@ -102,7 +106,8 @@ defmodule RetrievalNode.Search do
         :issue_type,
         :assignee,
         :reporter,
-        :parent
+        :parent,
+        :graph
       ])
       |> Keyword.merge(embedding: embedding, text_query: query_text, top_k: query_top_k)
 

@@ -10,6 +10,12 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
   server has no reranker loaded (`RERANKING` unset). When active, each result
   also carries `fused_score` — the original RRF score — alongside the rerank
   `score`, for comparing the two ranking modes.
+
+  Optional `graph: true` fuses a third ranking leg that matches the query's
+  significant terms against code-graph entities (functions/classes/modules
+  extracted from ASTs) and follows their mentions back to a chunk — surfaces
+  a chunk reachable only through a symbol match, not just vector/keyword
+  similarity (off by default).
   """
   use Anubis.Server.Component, type: :tool
 
@@ -49,6 +55,11 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
       description:
         "Experimental: rerank top candidates with a cross-encoder (adds latency; default off)"
     )
+
+    field(:graph, :boolean,
+      description:
+        "Fuse code-graph symbol matches into ranking (entities extracted from ASTs; default off)"
+    )
   end
 
   @impl true
@@ -67,7 +78,8 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
             :assignee,
             :reporter,
             :parent,
-            :rerank
+            :rerank,
+            :graph
           ])
           |> Enum.to_list()
           |> Keyword.put(:source_type, source_type)

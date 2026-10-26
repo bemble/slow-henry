@@ -3,8 +3,9 @@ defmodule RetrievalNode.MCP.Server do
   The MCP server for Retrieval Node — exposes the five retrieval tools over the
   `streamable_http` transport (mounted at `/mcp`, see `RetrievalNodeWeb.MCPPlug`).
 
-  Tools call only the `Search`/`Ingest` contexts (and `Ingest.GitMirror` for git
-  shell-outs); no tool module touches `Repo` or runs `System.cmd` directly.
+  Tools call only the `Search`/`Ingest`/`Graph` contexts (and `Ingest.GitMirror`
+  for git shell-outs); no tool module touches `Repo` or runs `System.cmd`
+  directly.
 
   **LAN-only, no auth** for this slice — see `design-mcp.md` Risks. Bearer auth is
   mandatory before any internet exposure.
@@ -19,6 +20,7 @@ defmodule RetrievalNode.MCP.Server do
   component(RetrievalNode.MCP.Tools.GetFile)
   component(RetrievalNode.MCP.Tools.GetDocument)
   component(RetrievalNode.MCP.Tools.ListRepos)
+  component(RetrievalNode.MCP.Tools.RelatedCode)
 
   @impl true
   def init(_client_info, frame), do: {:ok, frame}
