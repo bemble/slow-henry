@@ -117,6 +117,19 @@ defmodule RetrievalNode.Chunking.MarkdownImplTest do
       assert Enum.map(chunk(source), & &1.breadcrumb) == ["A", "A > B", "A > B > C", "A > D"]
     end
 
+    test "headings lose emphasis and backslash escapes in the breadcrumb, not in the text" do
+      assert [%{breadcrumb: "📝 Notes", text: text}] = chunk("# **📝 Notes**\n\ntext\n")
+      assert text =~ "# **📝 Notes**"
+      assert [%{breadcrumb: "Details"}] = chunk("## __Details__\n\ntext\n")
+
+      assert [%{breadcrumb: "2024.11.12 - Supervisor"}] =
+               chunk("# 2024.11.12 \\- Supervisor\n\nx\n")
+
+      assert [%{breadcrumb: "Draft plan"}] = chunk("# _Draft_ plan\n\nx\n")
+      assert [%{breadcrumb: "process_payment flow"}] = chunk("# process_payment flow\n\nx\n")
+      assert [%{breadcrumb: "a * b * c"}] = chunk("# a * b * c\n\nx\n")
+    end
+
     test "closing #s, #hashtags and empty headings" do
       assert [%{breadcrumb: "Title"}] = chunk("## Title ##\n\ntext\n")
       assert [%{breadcrumb: ""}] = chunk("#hashtag\n\ntext\n")

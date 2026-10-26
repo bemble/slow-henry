@@ -14,7 +14,8 @@ defmodule RetrievalNode.Chunking.MarkdownImpl do
     * a heading is never left alone at the end of a chunk — it stays with the
       content after it;
     * the breadcrumb is the heading trail the chunk's blocks share
-      (`"Incident log > Timeline"`);
+      (`"Incident log > Timeline"`), without emphasis markers or backslash
+      escapes;
     * a block larger than the target is split on line boundaries, at a blank
       line when there is one;
     * a last chunk under `@min_bytes` merges into the previous one.
@@ -42,6 +43,11 @@ defmodule RetrievalNode.Chunking.MarkdownImpl do
 
   @heading ~r/\A {0,3}(\#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+\#+)?[ \t]*\z/
   @fence ~r/\A {0,3}(`{3,}|~{3,})/
+  # Emphasis around a run of text (`**Notes**`, `_Draft_`), not inside a word,
+  # so `process_payment` keeps its underscore.
+  @emphasis ~r/(?<![\w*])(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?![\w*])/u
+  # CommonMark backslash escapes, as Google Docs exports them (`2024.11.12 \-`).
+  @escape ~r/\\([!-\/:-@\[-`{-~])/
 
   @impl true
   def allowed_languages, do: ["markdown" | @verbatim_languages]
@@ -134,9 +140,17 @@ defmodule RetrievalNode.Chunking.MarkdownImpl do
 
   defp heading(line) do
     case Regex.run(@heading, line) do
-      [_, hashes, title] when title != "" -> {String.length(hashes), title}
+      [_, hashes, title] when title != "" -> {String.length(hashes), clean_title(title)}
       _ -> nil
     end
+  end
+
+  # The title goes into the breadcrumb, which is embedded: drop markup that
+  # isn't words. The chunk text keeps the heading as written.
+  defp clean_title(title) do
+    title
+    |> String.replace(@emphasis, "\\2")
+    |> String.replace(@escape, "\\1")
   end
 
   defp fence_opener(line) do
