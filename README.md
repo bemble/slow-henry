@@ -120,6 +120,7 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `DATABASE_URL` | Prod only: takes precedence over the `PG*` variables. |
 | `OLLAMA_ENDPOINT` | Ollama server for embeddings, e.g. `http://localhost:11434` (see [Embeddings](#embeddings)). Unset: in-process CPU model. |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (default `nomic-embed-text`). |
+| `RERANKING` | `true` loads the in-process cross-encoder (~91 MB, CPU) at boot for `semantic_search`'s `rerank: true`. Unset: not loaded, and `rerank: true` keeps the normal ranking. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/settings` page. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for merged PRs and private clones (see below). |

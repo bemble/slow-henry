@@ -54,6 +54,16 @@ defmodule RetrievalNode.Ingest.Workers.DriveSync do
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"source_id" => source_id} = args}) do
     source = Repo.get!(Source, source_id)
+
+    if Source.syncable?(source) do
+      sync(source, args)
+    else
+      Logger.info("source=#{source.name} not syncable (inactive or denied); cancelling sync")
+      {:cancel, :ineligible}
+    end
+  end
+
+  defp sync(%Source{id: source_id} = source, args) do
     state = get_or_create_sync_state(source_id)
 
     config = source.config || %{}

@@ -41,12 +41,18 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   def perform(%Oban.Job{args: %{"source_id" => source_id}}) do
     source = Repo.get!(Source, source_id)
 
-    with {:ok, repo} <- github_repo(source) do
+    with :ok <- syncable(source),
+         {:ok, repo} <- github_repo(source) do
       state = get_or_create_sync_state(source_id)
       since = Map.get(state.cursor || %{}, "prs_updated_since", @epoch)
       sync(source, repo, state, since, nil, 0)
     end
   end
+
+  # Like the other sync workers: a job queued before the source was
+  # deactivated or denied (or a retry) is a no-op.
+  defp syncable(source),
+    do: if(Source.syncable?(source), do: :ok, else: {:cancel, :ineligible})
 
   defp github_repo(source) do
     case GitHub.repo_from_url(source.identifier) do

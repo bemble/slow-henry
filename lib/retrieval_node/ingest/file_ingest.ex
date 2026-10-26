@@ -1,15 +1,18 @@
 defmodule RetrievalNode.Ingest.FileIngest do
   @moduledoc """
   The ingest pipeline's functional core: turn one raw `pending_chunks` row into
-  the permanent, searchable state for the file it describes — scrub → chunk
-  (one parse) → embed (reusing what hasn't changed) → one write transaction
-  (upsert chunks, reconcile the file's chunk set, delete the raw row).
+  the permanent, searchable state for the file it describes — scrub → chunk (+
+  extract, one parse) → embed (reusing what hasn't changed) → one write
+  transaction (upsert chunks, reconcile the file's chunk set, graph rows, delete
+  the raw row).
   `apply/2` has no process concerns of its own: no queue, no retry, no notion
   of "this source" beyond the one row it's given.
 
   **Raises on bugs.** The write transaction (`reconcile_and_reap/3`, `write/7`)
   does not catch exceptions — a constraint violation rolls the transaction
-  back and Ecto re-raises, and that exception is left to propagate. This
+  back and Ecto re-raises, and that exception is left to propagate. That
+  includes a `Graph.upsert_from_staged/3` raise: chunks and graph rows commit
+  or roll back together. This
   module has no opinion about what a caller should do with a bug; deciding
   that (wrap the call, mark the row, keep the queue moving) is the job of
   whatever boundary process ends up calling `apply/2` in production — no such
@@ -36,7 +39,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
 
     * `:force` (default `row.force`) — re-chunk even though the file's content
       hash is unchanged. Embeddings are still reused wherever
-      `(chunk_key, content_hash)` matches — see "Embedding reuse" below.
+      `(breadcrumb, content_hash)` matches — see "Embedding reuse" below.
     * `:on_parse_crash` (default `:error`) — `:heuristic` on a row's FINAL
       attempt (the caller decides "final"; this module has no attempt
       counter of its own).
@@ -47,6 +50,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
   alias RetrievalNode.Chunking
   alias RetrievalNode.Chunking.{Breadcrumb, HeuristicImpl}
   alias RetrievalNode.Embedding
+  alias RetrievalNode.Graph
   alias RetrievalNode.Ingest
   alias RetrievalNode.Ingest.{PendingChunks, Scrubber}
   alias RetrievalNode.Repo
@@ -64,7 +68,12 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # chunk count into the tens of thousands, so batch defensively too.
   @insert_batch_size 2_000
 
+  # Every column derived from the staged row is refreshed on conflict; only the
+  # conflict target (source_id, chunk_key) and inserted_at are preserved.
   @replace_on_conflict [
+    :lang,
+    :repo,
+    :source_type,
     :content,
     :content_hash,
     :embedding,
@@ -159,9 +168,14 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # --- 4. chunk ---------------------------------------------------------
 
   defp chunk_and_index(row, content, opts, on_parse_crash) do
-    case Chunking.chunk(content, row.lang || "") do
-      {:ok, chunks} ->
-        finalize(row, chunks, "ok", opts)
+    case Chunking.chunk_with_graph(content, row.lang || "") do
+      # Tree-sitter chunking covers every non-whitespace byte, so zero chunks
+      # means whitespace-only content.
+      {:ok, %{chunks: [], entities: entities, references: references}} ->
+        finalize(row, [], "ok", opts, entities, references)
+
+      {:ok, %{chunks: chunks, entities: entities, references: references}} ->
+        finalize(row, chunks, chunks_parse_status(chunks), opts, entities, references)
 
       {:error, :unsupported_language} ->
         heuristic_fallback(row, content, "heuristic_fallback", opts)
@@ -178,9 +192,13 @@ defmodule RetrievalNode.Ingest.FileIngest do
     end
   end
 
+  # Every chunk of one parse shares its status; chunks without one are :ok.
+  defp chunks_parse_status([first | _]), do: first |> Map.get(:parse_status, :ok) |> to_string()
+
   defp heuristic_fallback(row, content, parse_status, opts) do
+    # The heuristic chunker has no AST to walk — no entities/references to attach.
     {:ok, chunks} = HeuristicImpl.chunk(content, row.lang || "")
-    finalize(row, chunks, parse_status, opts)
+    finalize(row, chunks, parse_status, opts, [], [])
   end
 
   # Unindexable content (scrub cancel, oversized, binary) reconciles the
@@ -214,11 +232,14 @@ defmodule RetrievalNode.Ingest.FileIngest do
 
   # --- 5. build chunk entries, 6. embed with reuse, 7. write -----------------
 
-  defp finalize(row, chunks, parse_status, opts) do
+  defp finalize(row, chunks, parse_status, opts, entities, references) do
+    graphs = attach_graphs(chunks, entities, references)
+
     built =
-      chunks
+      [chunks, graphs]
+      |> Enum.zip()
       |> Enum.with_index()
-      |> Enum.map(fn {chunk, index} ->
+      |> Enum.map(fn {{chunk, graph}, index} ->
         text = chunk.text
 
         %{
@@ -230,7 +251,8 @@ defmodule RetrievalNode.Ingest.FileIngest do
           text: text,
           # Chunk.content_hash is the hash of the CHUNK (row.content_hash, used
           # as `file_hash` below, is the raw-file hash).
-          content_hash: sha256(text)
+          content_hash: sha256(text),
+          graph: graph
         }
       end)
 
@@ -243,6 +265,8 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # It embeds the chunk's INDEX, so a boundary shift earlier in a file (a def
   # added/removed) re-keys every chunk after it — reconcile_file_chunks below
   # is what sheds the old rows under the stale keys once this batch commits.
+  # Embedding reuse is keyed on content, not chunk_key, so it survives the
+  # re-key.
   defp chunk_key(row, chunk, index) do
     :crypto.hash(:sha256, "#{row.natural_key}|#{index}|#{chunk.breadcrumb}")
     |> Base.encode16(case: :lower)
@@ -252,6 +276,111 @@ defmodule RetrievalNode.Ingest.FileIngest do
     metadata = row.metadata || %{}
     Map.get(metadata, "path") || Map.get(metadata, "name") || row.natural_key
   end
+
+  # Assigns each entity/reference to the chunk containing it: by byte range when
+  # both the item and the chunk carry byte positions (disambiguates several
+  # definitions on one line), else by start_line..end_line. Tree-sitter chunks
+  # cover every non-whitespace byte, so a top-level import lands in its
+  # toplevel chunk; the fallback of attaching items matching no chunk to the
+  # FIRST chunk (rather than dropping them) only applies to chunks without byte
+  # positions (heuristic chunks). Chunks with no graph items get `nil`.
+  @doc false
+  def attach_graphs(chunks, entities, references) do
+    index = build_chunk_index(chunks)
+    entities_by_chunk = Enum.group_by(entities, &chunk_index_for(&1, index))
+    references_by_chunk = Enum.group_by(references, &chunk_index_for(&1, index))
+
+    chunks
+    |> Enum.with_index()
+    |> Enum.map(fn {_chunk, i} ->
+      graph_attrs(Map.get(entities_by_chunk, i, []), Map.get(references_by_chunk, i, []))
+    end)
+  end
+
+  defp graph_attrs([], []), do: nil
+  defp graph_attrs(entities, references), do: %{entities: entities, references: references}
+
+  # Three position indexes, each built once per file (O(n log n)) so every
+  # lookup is O(log n): chunks that carry bytes (byte containment), chunks
+  # without bytes (line containment for byte-carrying items), and all chunks
+  # (line containment for items with no byte).
+  defp build_chunk_index(chunks) do
+    indexed = Enum.with_index(chunks)
+
+    {with_bytes, without_bytes} =
+      Enum.split_with(indexed, fn {c, _} -> is_map_key(c, :start_byte) end)
+
+    %{
+      bytes: range_index(with_bytes, & &1.start_byte, &(&1.end_byte - 1)),
+      lines_unbyted: range_index(without_bytes, & &1.start_line, & &1.end_line),
+      lines_all: range_index(indexed, & &1.start_line, & &1.end_line)
+    }
+  end
+
+  # Starts sorted ascending with a running max of the (inclusive) ends: the
+  # first entry whose running max reaches x is the first chunk, in start order,
+  # that contains x — correct even when ranges touch or overlap.
+  defp range_index(indexed, start_fun, end_fun) do
+    sorted = Enum.sort_by(indexed, fn {c, i} -> {start_fun.(c), i} end)
+
+    {ends, _} =
+      Enum.map_reduce(sorted, nil, fn {c, _}, max ->
+        e = end_fun.(c)
+        m = if max == nil or e > max, do: e, else: max
+        {m, m}
+      end)
+
+    %{
+      starts: sorted |> Enum.map(fn {c, _} -> start_fun.(c) end) |> List.to_tuple(),
+      maxends: List.to_tuple(ends),
+      orig: sorted |> Enum.map(&elem(&1, 1)) |> List.to_tuple()
+    }
+  end
+
+  defp lookup(%{starts: starts} = idx, x) when tuple_size(starts) > 0 and is_integer(x) do
+    last = last_at_or_before(starts, x, 0, tuple_size(starts) - 1, nil)
+
+    if last != nil and elem(idx.maxends, last) >= x do
+      elem(idx.orig, first_reaching(idx.maxends, x, 0, last))
+    end
+  end
+
+  defp lookup(_idx, _x), do: nil
+
+  # Rightmost position whose start <= x.
+  defp last_at_or_before(_t, _x, lo, hi, best) when lo > hi, do: best
+
+  defp last_at_or_before(t, x, lo, hi, best) do
+    mid = div(lo + hi, 2)
+
+    if elem(t, mid) <= x,
+      do: last_at_or_before(t, x, mid + 1, hi, mid),
+      else: last_at_or_before(t, x, lo, mid - 1, best)
+  end
+
+  # Leftmost position <= hi whose running max end >= x (hi itself qualifies).
+  defp first_reaching(_t, _x, lo, hi) when lo == hi, do: lo
+
+  defp first_reaching(t, x, lo, hi) do
+    mid = div(lo + hi, 2)
+
+    if elem(t, mid) >= x,
+      do: first_reaching(t, x, lo, mid),
+      else: first_reaching(t, x, mid + 1, hi)
+  end
+
+  # Byte containment applies only when both sides carry bytes; everything else
+  # compares lines. An item matching nothing goes to chunk 0.
+  defp chunk_index_for(%{byte: byte} = item, index) do
+    hits = [lookup(index.bytes, byte), lookup(index.lines_unbyted, Map.get(item, :line))]
+
+    case Enum.reject(hits, &is_nil/1) do
+      [] -> 0
+      found -> Enum.min(found)
+    end
+  end
+
+  defp chunk_index_for(%{line: line}, index), do: lookup(index.lines_all, line) || 0
 
   # Called only from inside a terminal `Repo.transaction` (`write/7`,
   # `reconcile_and_reap/3`), so the append-only audit rows commit exactly when
@@ -271,33 +400,20 @@ defmodule RetrievalNode.Ingest.FileIngest do
   end
 
   # Embedding reuse: load the file's EXISTING chunks (by file identity, not by
-  # this batch's keys — a boundary shift means a chunk at the same ordinal can
-  # have a different key than before) and reuse an embedding wherever a new
-  # entry's (chunk_key, content_hash) matches an existing row's exactly — same
-  # key AND same chunk text means the embedding is still correct. Everything
-  # else goes through Embedding.embed_batch/1 in ONE call. Reuse applies
-  # unconditionally (force or not) — the model is deterministic, so an
-  # unchanged chunk always re-embeds to the same vector; skipping the work
-  # instead is what makes a `force: true` re-derive cheap.
+  # this batch's keys) and reuse an embedding wherever a new entry's
+  # (breadcrumb, content_hash) matches an existing row's — together they fully
+  # determine the embedded text (embed_text/1), so the vector is identical.
+  # chunk_key (which embeds the chunk's index) plays no part: a chunk that only
+  # shifted position keeps its vector. Everything else goes through
+  # Embedding.embed_batch/1 in ONE call. Reuse applies unconditionally (force
+  # or not) — the model is deterministic, so an unchanged chunk always
+  # re-embeds to the same vector; skipping the work instead is what makes a
+  # `force: true` re-derive cheap.
   defp embed_with_reuse(row, built) do
-    existing = load_existing_chunks(row)
-    profile = Embedding.profile()
+    existing = load_existing_chunks(row, Embedding.profile())
 
     {reused_entries, to_embed} =
-      Enum.split_with(built, fn entry ->
-        case Map.get(existing, entry.chunk_key) do
-          # Reuse only when the text is unchanged AND the stored row actually
-          # HAS an embedding — Chunk.embedding is nullable, and reusing a nil
-          # would persist an unembedded chunk and skip embedding it.
-          # …and only a vector from the current embedding setup: after a
-          # backend/model switch an unchanged chunk is re-embedded too.
-          %{content_hash: hash, embedding: emb, embedding_profile: p} ->
-            hash == entry.content_hash and not is_nil(emb) and p == profile
-
-          nil ->
-            false
-        end
-      end)
+      Enum.split_with(built, &Map.has_key?(existing, reuse_key(&1)))
 
     texts = Enum.map(to_embed, &embed_text/1)
     vectors = if texts == [], do: [], else: Embedding.embed_batch(texts)
@@ -316,28 +432,30 @@ defmodule RetrievalNode.Ingest.FileIngest do
 
     reused_by_key =
       Map.new(reused_entries, fn entry ->
-        {entry.chunk_key, Map.fetch!(existing, entry.chunk_key).embedding}
+        {entry.chunk_key, Map.fetch!(existing, reuse_key(entry))}
       end)
 
     {Map.merge(fresh_by_key, reused_by_key), length(to_embed), length(reused_entries)}
   end
 
-  defp load_existing_chunks(row) do
+  defp reuse_key(entry), do: {entry.breadcrumb, entry.content_hash}
+
+  # {context_breadcrumb, content_hash} => embedding. Rows with a NULL embedding
+  # (Chunk.embedding is nullable) are excluded so one can never be reused —
+  # that would persist an unembedded chunk and skip embedding it — and so are
+  # vectors from another embedding setup (`profile`): after a backend/model
+  # switch an unchanged chunk is re-embedded too. Two
+  # identical chunks in one file collide on the key harmlessly: identical
+  # input, identical vector, so either row's embedding is right.
+  defp load_existing_chunks(row, profile) do
     case Ingest.file_chunks_query(row.source_id, row.source_type, row.metadata) do
       nil ->
         %{}
 
       query ->
         query
-        |> select(
-          [c],
-          {c.chunk_key,
-           %{
-             content_hash: c.content_hash,
-             embedding: c.embedding,
-             embedding_profile: c.embedding_profile
-           }}
-        )
+        |> where([c], not is_nil(c.embedding) and c.embedding_profile == ^profile)
+        |> select([c], {{c.context_breadcrumb, c.content_hash}, c.embedding})
         |> Repo.all()
         |> Map.new()
     end
@@ -350,19 +468,20 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # identity, chunk_key, upserts rather than duplicating), reconcile the
   # file's chunk set (deletes any existing row for this file whose key isn't
   # in this batch — empty for a whitespace-only file, which sheds every prior
-  # chunk), then the raw row is reaped. Any exception here (an insert
+  # chunk), graph rows, then the raw row is reaped. Any exception here (an insert
   # constraint violation) rolls the transaction back and Ecto re-raises —
   # deliberately NOT caught here (see the moduledoc's "raises on bugs"
   # paragraph): nothing partial is ever left committed, and the raw row
   # survives for a retry either way.
   defp write(row, built, parse_status, opts, embeddings_by_key, embedded, reused) do
     entries = Enum.map(built, &chunk_entry(row, &1, parse_status, opts, embeddings_by_key))
+    staged_rows = Enum.map(built, &staged_row(row, &1))
     keep_chunk_keys = Enum.map(built, & &1.chunk_key)
 
     Repo.transaction(fn ->
       record_audit(row, Keyword.get(opts, :findings, []))
       now = DateTime.utc_now()
-      insert_batches(entries, now)
+      chunk_ids_by_key = insert_batches(entries, now)
 
       reconciled =
         Ingest.reconcile_file_chunks(
@@ -373,6 +492,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
           keep_chunk_keys
         )
 
+      {:ok, graph_counts} = Graph.upsert_from_staged(Repo, staged_rows, chunk_ids_by_key)
       PendingChunks.delete_by_ids([row.id])
 
       %{
@@ -380,7 +500,8 @@ defmodule RetrievalNode.Ingest.FileIngest do
         chunks: length(entries),
         reconciled: reconciled,
         embedded: embedded,
-        reused: reused
+        reused: reused,
+        graph: graph_counts
       }
     end)
   end
@@ -411,17 +532,36 @@ defmodule RetrievalNode.Ingest.FileIngest do
     }
   end
 
-  # Batched upsert (ON CONFLICT on the chunk identity replaces the row). An
-  # empty `entries` list (the whitespace-only path) never calls insert_all.
+  # The subset of fields Graph.upsert_from_staged/3 reads off each staged row.
+  # Plain maps, not PendingChunk structs.
+  defp staged_row(row, entry) do
+    %{
+      source_id: row.source_id,
+      lang: row.lang,
+      chunk_key: entry.chunk_key,
+      graph: entry.graph,
+      metadata: row.metadata,
+      natural_key: row.natural_key
+    }
+  end
+
+  # Batched upsert (ON CONFLICT on the chunk identity replaces the row).
+  # Accumulates chunk_key => id across every batch (ON CONFLICT UPDATE still
+  # returns rows) — Graph needs it to link mentions to the chunks just written.
+  # An empty `entries` list (the whitespace-only path) never calls insert_all.
   defp insert_batches(entries, now) do
     entries
     |> Enum.chunk_every(insert_batch_size())
-    |> Enum.each(fn batch ->
-      Repo.insert_all(Chunk, batch,
-        placeholders: %{now: now},
-        on_conflict: {:replace, @replace_on_conflict},
-        conflict_target: [:source_id, :chunk_key]
-      )
+    |> Enum.reduce(%{}, fn batch, acc ->
+      {_count, rows} =
+        Repo.insert_all(Chunk, batch,
+          placeholders: %{now: now},
+          on_conflict: {:replace, @replace_on_conflict},
+          conflict_target: [:source_id, :chunk_key],
+          returning: [:id, :chunk_key]
+        )
+
+      Enum.reduce(rows, acc, fn row, acc -> Map.put(acc, row.chunk_key, row.id) end)
     end)
   end
 

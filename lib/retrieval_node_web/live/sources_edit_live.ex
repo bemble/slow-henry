@@ -324,9 +324,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   end
 
   defp plan_review(assigns) do
-    case entries(assigns) do
-      {:ok, entries} -> {:ok, SourcesFile.plan(entries), SourcesFile.encode(entries)}
-      {:error, msg} -> {:error, msg}
+    with {:ok, entries} <- entries(assigns),
+         {:ok, changes} <- SourcesFile.plan(entries) do
+      {:ok, changes, SourcesFile.encode(entries)}
     end
   end
 
@@ -1145,14 +1145,21 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   defp describe({:update, s, e}) do
     what =
       [
-        s.name != e.name && "renamed to #{e.name}",
+        s.name != e.name && rename(s, e),
         (s.active and not e.active) && "deactivated",
         (not s.active and e.active) && "reactivated",
-        (s.config || %{}) != e.config && "options changed"
+        Map.delete(s.config || %{}, "mirror_slug") != e.config && "options changed"
       ]
       |> Enum.filter(& &1)
       |> Enum.join(", ")
 
     "Update #{s.name}: #{what}"
+  end
+
+  defp rename(s, e) do
+    case SourcesFile.pinned_slug(s, e) do
+      nil -> "renamed to #{e.name}"
+      slug -> "renamed to #{e.name} (repo slug #{slug} kept)"
+    end
   end
 end

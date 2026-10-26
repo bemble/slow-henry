@@ -40,6 +40,13 @@ if config_env() != :test do
   end
 end
 
+# Query-time reranking (the ~91 MB in-process cross-encoder, loaded and
+# JIT-compiled at boot) only with RERANKING=true: off by default to spare small
+# machines. Off, a `rerank: true` search keeps the RRF ranking.
+if config_env() != :test do
+  config :retrieval_node, reranking_serving_start: System.get_env("RERANKING") in ~w(true 1)
+end
+
 # GitHub App for merged PRs and private clones (RetrievalNode.GitHub.OAuth):
 # connected from the Settings page, its refresh token stored by
 # RetrievalNode.Secrets. GITHUB_TOKEN (e.g. a fine-grained PAT) overrides it.

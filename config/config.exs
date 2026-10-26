@@ -23,7 +23,8 @@ config :retrieval_node, RetrievalNode.Repo, types: RetrievalNode.PostgrexTypes
 # touching call sites. `:test` overrides `chunking_impl` to keep tests NIF-free.
 config :retrieval_node,
   chunking_impl: RetrievalNode.Chunking.TreeSitterImpl,
-  embedding_impl: RetrievalNode.Embedding.NxServingImpl
+  embedding_impl: RetrievalNode.Embedding.NxServingImpl,
+  reranking_impl: RetrievalNode.Reranking.NxServingImpl
 
 # Oban ingest pipeline. `*Sync` discovery jobs (RepoSync/DriveSync/JiraSync)
 # are the only ingest work left in Oban — they only ever append to
@@ -65,7 +66,8 @@ config :retrieval_node, Oban,
        # Daily full Drive pass (scope/classification drift the changes feed can't
        # express). Off the :00/:30 ticks so it doesn't collapse into an incremental.
        {"15 4 * * *", RetrievalNode.Ingest.Workers.SyncScheduler,
-        args: %{"kind" => "drive", "mode" => "full"}}
+        args: %{"kind" => "drive", "mode" => "full"}},
+       {"30 4 * * *", RetrievalNode.Ingest.Workers.GraphGc}
      ]}
   ]
 
@@ -88,6 +90,39 @@ config :retrieval_node, RetrievalNode.Embedding.Serving,
   batch_size: 16,
   sequence_length: [128, 256, 512],
   batch_timeout_ms: 50
+
+# Reranking serving (Bumblebee/Nx.Serving cross-encoder over
+# cross-encoder/ms-marco-MiniLM-L-6-v2). Used only at query time, to rerank a
+# handful of top-K retrieval candidates against the query. `compile` forces a
+# JIT pass at init (batch_size 16).
+#
+# `sequence_length` buckets for the same reason as the embedding serving: most
+# `{query, passage}` pairs are far shorter than the largest bucket.
+#
+# `batch_timeout_ms` is 10ms (tighter than the embedding serving's 50ms)
+# because rerank calls arrive as one already-batched `batched_run/2` of ~50
+# pairs from a single query — there is no stream of small concurrent calls to
+# coalesce, and this path is on the latency-sensitive query request.
+config :retrieval_node, RetrievalNode.Reranking.Serving,
+  model: "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  batch_size: 16,
+  sequence_length: [256, 512],
+  batch_timeout_ms: 10
+
+# Query-time reranking defaults OFF; callers opt in per request. `rerank_candidates`
+# is the RRF candidate pool size fed into the cross-encoder — roughly the
+# reranker's practical latency budget in one `batched_run/2` call. The pool is
+# capped at 100 (HybridQuery's row maximum); larger values have no effect.
+config :retrieval_node, rerank_default: false, rerank_candidates: 50
+
+# Graph (entity-mention) leg of the hybrid RRF query — see HybridQuery
+# moduledoc. Off by default: the leg adds query latency on every request
+# whether or not it improves relevance, so callers opt in per request (the MCP
+# `graph` field). `graph_leg_weight` keeps the as-yet-unproven leg from
+# outvoting the tuned vector/FTS pair (weight 1.0 each) when enabled.
+# `graph_leg_timeout_ms` is a safety net: a graph-leg query slower than this
+# is cancelled and the request falls back to plain vector+FTS results.
+config :retrieval_node, graph_leg_default: false, graph_leg_weight: 0.5, graph_leg_timeout_ms: 50
 
 # EXLA as the global Nx default backend — without this, any tensor op NOT
 # routed through the serving's own `defn_options: [compiler: EXLA]` (e.g. the

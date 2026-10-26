@@ -40,6 +40,8 @@ defmodule RetrievalNode.Ingest.Workers.JiraSync do
       states: [:available, :scheduled, :executing, :retryable, :suspended]
     ]
 
+  require Logger
+
   alias RetrievalNode.Chunking
   alias RetrievalNode.Ingest.{Jira, PendingChunks, SourceOwner}
   alias RetrievalNode.Repo
@@ -51,6 +53,16 @@ defmodule RetrievalNode.Ingest.Workers.JiraSync do
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"source_id" => source_id} = args}) do
     source = Repo.get!(Source, source_id)
+
+    if Source.syncable?(source) do
+      sync(source, args)
+    else
+      Logger.info("source=#{source.name} not syncable (inactive or denied); cancelling sync")
+      {:cancel, :ineligible}
+    end
+  end
+
+  defp sync(%Source{id: source_id} = source, args) do
     state = get_or_create_sync_state(source_id)
 
     # A full pass (options changed in sources.toml) re-stages every issue.
