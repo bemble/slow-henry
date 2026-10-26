@@ -52,28 +52,33 @@ defmodule RetrievalNode.Ingest.Rechunk do
     end
   end
 
+  # Rewrites every non-code chunk row (and so its embedding index entries):
+  # tens of seconds on a large corpus, so no statement timeout.
   defp reset_index_state do
-    Repo.transaction(fn ->
-      code = TreeSitterImpl.allowed_languages()
+    Repo.transaction(
+      fn ->
+        code = TreeSitterImpl.allowed_languages()
 
-      {chunks_reset, _} =
-        from(c in Chunk, where: is_nil(c.lang) or c.lang not in ^code)
-        |> Repo.update_all(set: [file_hash: nil])
+        {chunks_reset, _} =
+          from(c in Chunk, where: is_nil(c.lang) or c.lang not in ^code)
+          |> Repo.update_all([set: [file_hash: nil]], timeout: :infinity)
 
-      from(c in Chunk,
-        where: c.source_type == :drive_folder,
-        update: [set: [metadata: fragment("? - 'modified_time'", c.metadata)]]
-      )
-      |> Repo.update_all([])
+        from(c in Chunk,
+          where: c.source_type == :drive_folder,
+          update: [set: [metadata: fragment("? - 'modified_time'", c.metadata)]]
+        )
+        |> Repo.update_all([], timeout: :infinity)
 
-      from(s in SyncState,
-        where: fragment("? \\? 'prs_updated_since'", s.cursor),
-        update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
-      )
-      |> Repo.update_all([])
+        from(s in SyncState,
+          where: fragment("? \\? 'prs_updated_since'", s.cursor),
+          update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
+        )
+        |> Repo.update_all([])
 
-      chunks_reset
-    end)
+        chunks_reset
+      end,
+      timeout: :infinity
+    )
   end
 
   defp enqueue_syncs do
