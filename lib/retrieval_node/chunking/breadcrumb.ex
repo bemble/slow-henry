@@ -15,10 +15,22 @@ defmodule RetrievalNode.Chunking.Breadcrumb do
   @doc """
   Combine a `prefix` (file path for code, doc title for docs) with the chunk's
   in-source `symbol_trail`. An empty/nil trail yields just the prefix.
+
+  A document's first heading is usually its title, which the prefix already
+  says: a leading trail entry equal to the prefix, or to what follows its
+  `": "` (`"PR #12: Fix login"` and `"Fix login"`), is dropped.
   """
   @spec build(String.t(), String.t() | nil) :: String.t()
   def build(prefix, symbol_trail) when symbol_trail in [nil, ""], do: prefix
-  def build(prefix, symbol_trail), do: prefix <> @separator <> sanitize(symbol_trail)
+
+  def build(prefix, symbol_trail) do
+    trail = sanitize(symbol_trail)
+    [first | rest] = String.split(trail, @separator, parts: 2)
+
+    if prefix == first or String.ends_with?(prefix, ": " <> first),
+      do: build(prefix, Enum.join(rest)),
+      else: prefix <> @separator <> trail
+  end
 
   # The symbol trail comes from parsed (untrusted) identifiers. Collapse any
   # newlines/control whitespace to spaces so a malformed name can't inject line

@@ -4,17 +4,18 @@ defmodule RetrievalNode.Ingest.Jira do
   (status category Done — open issues churn and aren't worth indexing), through
   the enhanced search (`/rest/api/3/search/jql`, paged by `nextPageToken`).
 
-  Each issue is rendered as a short header — key and summary, type, status,
-  resolution, and the optional fields the project turns on in sources.toml
-  (`assignee`, `reporter`, `parent`: the epic, for a story) — then its
-  description, and carries the same fields as metadata, which
-  `semantic_search` filters on.
+  Each issue is rendered as markdown: a `# KEY: summary` heading, lines for
+  type, status, resolution and the optional fields the project turns on in
+  sources.toml (`assignee`, `reporter`, `parent`: the epic, for a story),
+  then its description (`Jira.Adf`). It carries the same fields as metadata,
+  which `semantic_search` filters on.
 
   Credentials come from `RetrievalNode.Jira.Credentials`. The Req request is
   built with `req_options/0` merged in, which tests override (via `Req.Test`)
   to avoid real HTTP.
   """
 
+  alias RetrievalNode.Ingest.Jira.Adf
   alias RetrievalNode.Jira.Credentials
 
   @fields ~w(summary description resolutiondate issuetype status resolution)
@@ -231,7 +232,7 @@ defmodule RetrievalNode.Ingest.Jira do
 
     header =
       [
-        "#{key}: #{fields["summary"]}",
+        "# #{key}: #{fields["summary"]}",
         line([{"Type", m["issue_type"]}, {"Status", status}, {"Resolved", resolved}]),
         line([{"Assignee", m["assignee"]}, {"Reporter", m["reporter"]}]),
         line([{"Parent", parent}])
@@ -239,7 +240,8 @@ defmodule RetrievalNode.Ingest.Jira do
       |> Enum.reject(&blank?/1)
       |> Enum.join("\n")
 
-    [header, extract_text(fields["description"])]
+    # The description's own headings go under the issue's `#` heading.
+    [header, Adf.to_markdown(fields["description"], heading_offset: 1)]
     |> Enum.reject(&blank?/1)
     |> Enum.join("\n\n")
   end
@@ -251,19 +253,6 @@ defmodule RetrievalNode.Ingest.Jira do
   end
 
   defp blank?(v), do: v in [nil, ""]
-
-  # Jira Cloud descriptions are Atlassian Document Format (nested content nodes);
-  # walk it collecting text nodes. A plain string (older API) passes through.
-  defp extract_text(nil), do: ""
-  defp extract_text(text) when is_binary(text), do: text
-
-  defp extract_text(%{"content" => content}) when is_list(content) do
-    Enum.map_join(content, "", &extract_text/1)
-  end
-
-  defp extract_text(%{"text" => text}) when is_binary(text), do: text
-  defp extract_text(%{"type" => "hardBreak"}), do: "\n"
-  defp extract_text(_), do: ""
 
   # Retry-After may be absent, an HTTP-date (RFC-allowed), or garbage — none of
   # which are a delta-seconds integer. Parse defensively and fall back to 60s so a

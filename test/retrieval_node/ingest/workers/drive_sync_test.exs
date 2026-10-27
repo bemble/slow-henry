@@ -146,6 +146,7 @@ defmodule RetrievalNode.Ingest.Workers.DriveSyncTest do
 
       row = Repo.one!(from p in PendingChunk, where: p.natural_key == "drive:plain")
       assert row.raw_content =~ "Body of plain"
+      assert row.lang == "markdown"
 
       assert row.metadata == %{
                "doc_id" => "plain",

@@ -98,7 +98,40 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
     "rb" => "ruby",
     "java" => "java",
     "ex" => "elixir",
-    "exs" => "elixir"
+    "exs" => "elixir",
+    # Not code: chunked by Chunking.MarkdownImpl — headings for markdown, line
+    # packing for the rest (where `#` is a comment).
+    "md" => "markdown",
+    "markdown" => "markdown",
+    "mdx" => "markdown",
+    "rst" => "markdown",
+    "adoc" => "markdown",
+    "yml" => "yaml",
+    "yaml" => "yaml",
+    "json" => "json",
+    "toml" => "toml",
+    "ini" => "ini",
+    "cfg" => "ini",
+    "conf" => "ini",
+    "properties" => "properties",
+    "tf" => "terraform",
+    "tfvars" => "terraform",
+    "hcl" => "terraform",
+    "dockerfile" => "dockerfile",
+    "txt" => "text"
+  }
+
+  # Extension-less files, by upper-cased name.
+  @lang_by_name %{
+    "README" => "markdown",
+    "CHANGELOG" => "markdown",
+    "CONTRIBUTING" => "markdown",
+    "AUTHORS" => "markdown",
+    "NOTICE" => "markdown",
+    "LICENSE" => "markdown",
+    "COPYING" => "markdown",
+    "DOCKERFILE" => "dockerfile",
+    "CODEOWNERS" => "text"
   }
 
   @impl Oban.Worker
@@ -402,8 +435,18 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
   defp repo_slug(source), do: Source.mirror_slug(source)
 
   defp lang_for(path) do
-    ext = path |> Path.extname() |> String.trim_leading(".")
-    Map.get(@lang_by_ext, ext)
+    name = Path.basename(path)
+    ext = path |> Path.extname() |> String.trim_leading(".") |> String.downcase()
+
+    cond do
+      # CMake is code, whatever its extension says.
+      name == "CMakeLists.txt" -> nil
+      # `.gitignore`, `.dockerignore`, …: Path.extname/1 sees no extension.
+      String.starts_with?(name, ".") and String.ends_with?(name, "ignore") -> "ignore"
+      String.starts_with?(name, "Dockerfile.") -> "dockerfile"
+      ext == "" -> Map.get(@lang_by_name, String.upcase(name))
+      true -> Map.get(@lang_by_ext, ext)
+    end
   end
 
   defp sha256(bin), do: :crypto.hash(:sha256, bin) |> Base.encode16(case: :lower)

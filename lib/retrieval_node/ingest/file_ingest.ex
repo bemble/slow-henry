@@ -272,6 +272,10 @@ defmodule RetrievalNode.Ingest.FileIngest do
     |> Base.encode16(case: :lower)
   end
 
+  # A merged PR's virtual path (`pulls/<n>`) says nothing; its name
+  # (`PR #<n>: <title>`) does.
+  defp file_prefix(%{metadata: %{"pr" => _, "name" => name}}) when is_binary(name), do: name
+
   defp file_prefix(row) do
     metadata = row.metadata || %{}
     Map.get(metadata, "path") || Map.get(metadata, "name") || row.natural_key

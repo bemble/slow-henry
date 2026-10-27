@@ -53,7 +53,7 @@ defmodule RetrievalNode.Ingest.SourcesTest do
                )
 
       assert issue.text == """
-             PROJ-7: Login loops
+             # PROJ-7: Login loops
              Type: Bug · Status: Done, Fixed · Resolved: 2026-02-01
              Assignee: Ada Lovelace · Reporter: Alan Turing
              Parent: PROJ-1 (Epic): Auth revamp
@@ -81,7 +81,7 @@ defmodule RetrievalNode.Ingest.SourcesTest do
       assert [issue] = Jira.parse_issues(@full_issue, nil, ["reporter"])
 
       assert issue.text == """
-             PROJ-7: Login loops
+             # PROJ-7: Login loops
              Type: Bug · Status: Done, Fixed · Resolved: 2026-02-01
              Reporter: Alan Turing
 
@@ -101,11 +101,11 @@ defmodule RetrievalNode.Ingest.SourcesTest do
         "issues" => [%{"key" => "P-1", "fields" => %{"summary" => "Bare", "assignee" => nil}}]
       }
 
-      assert [%{text: "P-1: Bare", metadata: metadata}] = Jira.parse_issues(body)
+      assert [%{text: "# P-1: Bare", metadata: metadata}] = Jira.parse_issues(body)
       assert metadata == %{"issue_key" => "P-1", "name" => "P-1: Bare"}
     end
 
-    test "parse_issues extracts summary + ADF description text" do
+    test "parse_issues renders the ADF description as markdown, under the issue heading" do
       body = %{
         "issues" => [
           %{
@@ -114,7 +114,18 @@ defmodule RetrievalNode.Ingest.SourcesTest do
               "summary" => "Fix the bug",
               "resolutiondate" => "2026-02-01T00:00:00.000+0000",
               "description" => %{
-                "content" => [%{"content" => [%{"type" => "text", "text" => "root cause was X"}]}]
+                "type" => "doc",
+                "content" => [
+                  %{
+                    "type" => "heading",
+                    "attrs" => %{"level" => 1},
+                    "content" => [%{"type" => "text", "text" => "Cause"}]
+                  },
+                  %{
+                    "type" => "paragraph",
+                    "content" => [%{"type" => "text", "text" => "root cause was X"}]
+                  }
+                ]
               }
             }
           }
@@ -123,8 +134,8 @@ defmodule RetrievalNode.Ingest.SourcesTest do
 
       assert [issue] = Jira.parse_issues(body)
       assert issue.key == "PROJ-1"
-      assert issue.text =~ "Fix the bug"
-      assert issue.text =~ "root cause was X"
+      assert issue.text =~ "# PROJ-1: Fix the bug\n"
+      assert issue.text =~ "\n\n## Cause\n\nroot cause was X"
     end
   end
 
