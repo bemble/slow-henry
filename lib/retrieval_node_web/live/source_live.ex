@@ -120,6 +120,7 @@ defmodule RetrievalNodeWeb.SourceLive do
     assigns =
       assign(assigns,
         prs: config["pull_requests"] == true,
+        open_prs: config["pull_requests"] == true and config["open_pull_requests"] == true,
         exclude: config["exclude"] || []
       )
 
@@ -127,9 +128,13 @@ defmodule RetrievalNodeWeb.SourceLive do
     <span
       :if={@prs}
       class={["badge badge-info badge-sm", @class]}
-      title="Merged pull requests are indexed, as pulls/N"
+      title={
+        if @open_prs,
+          do: "Merged and open pull requests are indexed, as pulls/N",
+          else: "Merged pull requests are indexed, as pulls/N"
+      }
     >
-      PR
+      {if @open_prs, do: "PR + open", else: "PR"}
     </span>
     <span
       :if={@exclude != []}

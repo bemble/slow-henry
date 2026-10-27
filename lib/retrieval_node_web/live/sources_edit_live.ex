@@ -87,6 +87,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       url: entry.identifier,
       active: entry.active,
       pull_requests: entry.config["pull_requests"] == true,
+      open_pull_requests: entry.config["open_pull_requests"] == true,
       exclude: entry.config["exclude"] || []
     }
   end
@@ -347,6 +348,8 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         url: params["url"] || row.url,
         active: params["active"] == "true",
         pull_requests: params["pull_requests"] == "true",
+        # Disabled (so not sent) while PRs are off.
+        open_pull_requests: params["open_pull_requests"] == "true",
         exclude: params["exclude"] || []
     }
   end
@@ -432,7 +435,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
     name =
       Enum.find([name | for(i <- 2..99, do: "#{name}-#{i}")], &(not MapSet.member?(names, &1)))
 
-    %{key: new_key(), name: name, url: url, active: true, pull_requests: false, exclude: []}
+    %{
+      key: new_key(),
+      name: name,
+      url: url,
+      active: true,
+      pull_requests: false,
+      open_pull_requests: false,
+      exclude: []
+    }
   end
 
   # `https://host/org/repo.git` → "repo", made a valid source name.
@@ -461,6 +472,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           "url" => String.trim(r.url),
           "active" => r.active,
           "pull_requests" => r.pull_requests,
+          "open_pull_requests" => r.pull_requests and r.open_pull_requests,
           "exclude" => non_blank(r.exclude)
         }
       end
@@ -891,6 +903,14 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             name={"repos[#{@row.key}][pull_requests]"}
             value={@row.pull_requests}
             label="Merged PRs"
+          />
+          <.input
+            type="checkbox"
+            id={"#{@row.key}-open-prs"}
+            name={"repos[#{@row.key}][open_pull_requests]"}
+            value={@row.pull_requests and @row.open_pull_requests}
+            disabled={not @row.pull_requests}
+            label="Open PRs"
           />
         </div>
         <button

@@ -7,7 +7,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
   alias RetrievalNode.Ingest.GitHub
   alias RetrievalNode.Ingest.Workers.PullRequestSync
   alias RetrievalNode.Repo
-  alias RetrievalNode.Retrieval.{PendingChunk, Source, SyncState}
+  alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
   setup do
     prev = {
@@ -214,6 +214,179 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
     assert %{"author" => "alice", "reviewers" => ["bob"]} = second.metadata
     assert first.text == second.text
     assert first.hash != second.hash
+  end
+
+  describe "open PRs" do
+    setup %{source: source} do
+      source =
+        source
+        |> Source.update_changeset(%{
+          config: %{"pull_requests" => true, "open_pull_requests" => true}
+        })
+        |> Repo.update!()
+
+      %{source: source}
+    end
+
+    defp open_node(n, updated, extra \\ %{}),
+      do: node(n, updated, Map.merge(%{"state" => "OPEN", "mergedAt" => nil}, extra))
+
+    defp indexed!(source, path, metadata \\ %{}) do
+      Repo.insert!(%Chunk{
+        source_id: source.id,
+        source_type: :git_repo,
+        chunk_key: "k-#{path}",
+        content_hash: "h",
+        content: "text",
+        context_breadcrumb: path,
+        metadata:
+          if(String.starts_with?(path, "pulls/"), do: %{"pr" => 1}, else: %{})
+          |> Map.merge(%{"path" => path})
+          |> Map.merge(metadata)
+      })
+    end
+
+    defp staged_rows(source) do
+      Repo.all(
+        from p in PendingChunk,
+          where: p.source_id == ^source.id,
+          order_by: p.natural_key,
+          select: %{
+            path: p.metadata["path"],
+            status: p.status,
+            metadata: p.metadata,
+            text: p.raw_content
+          }
+      )
+    end
+
+    test "searches every state; stages open PRs and drafts, not those a bot opened", %{
+      source: source
+    } do
+      runner(%{
+        nil =>
+          {[
+             node(1, "2026-01-01T00:00:00Z", %{"state" => "MERGED"}),
+             open_node(2, "2026-01-02T00:00:00Z"),
+             open_node(3, "2026-01-03T00:00:00Z", %{"isDraft" => true}),
+             open_node(4, "2026-01-04T00:00:00Z", %{
+               "author" => %{"login" => "dependabot", "__typename" => "Bot"}
+             })
+           ], nil}
+      })
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert_received {:search, %{"q" => q}}
+      assert q == "repo:acme/app is:pr updated:>=1970-01-01T00:00:00Z sort:updated-asc"
+
+      assert [merged, open, draft] = staged_rows(source)
+      assert %{"state" => "merged", "name" => "PR #1: Change 1"} = merged.metadata
+      assert merged.text =~ "by @alice, merged 2026-01-01"
+
+      assert %{"state" => "open", "name" => "PR #2 [open]: Change 2"} = open.metadata
+      refute Map.has_key?(open.metadata, "merged_at")
+      refute Map.has_key?(open.metadata, "draft")
+      assert open.text =~ "by @alice, open\n"
+
+      assert %{"state" => "open", "draft" => true} = draft.metadata
+      assert draft.text =~ "open (draft)"
+
+      # The bot's PR is skipped, but the watermark still moves past it.
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor["prs_updated_since"] ==
+               "2026-01-04T00:00:00Z"
+    end
+
+    test "a PR closed without merge is deleted when indexed, ignored otherwise", %{
+      source: source
+    } do
+      indexed!(source, "pulls/5", %{"state" => "open"})
+
+      runner(%{
+        nil =>
+          {[
+             open_node(5, "2026-01-05T00:00:00Z", %{"state" => "CLOSED"}),
+             open_node(6, "2026-01-06T00:00:00Z", %{"state" => "CLOSED"})
+           ], nil}
+      })
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert [%{path: "pulls/5", status: "deleted"}] = staged_rows(source)
+    end
+
+    test "a backlog snoozes and the re-run resumes from the watermark", %{source: source} do
+      pad = &String.pad_leading(Integer.to_string(&1), 2, "0")
+
+      nodes =
+        for n <- 1..301, do: node(n, "2026-01-01T00:#{pad.(div(n, 60))}:#{pad.(rem(n, 60))}Z")
+
+      pages =
+        nodes
+        |> Enum.chunk_every(50)
+        |> Enum.with_index()
+        |> Map.new(fn {page, i} ->
+          {if(i == 0, do: nil, else: "c#{i}"), {page, if(i < 6, do: "c#{i + 1}")}}
+        end)
+
+      runner(pages)
+      assert {:snooze, _} = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      watermark = Repo.get_by!(SyncState, source_id: source.id).cursor["prs_updated_since"]
+      assert watermark > "1970-01-01T00:00:00Z"
+
+      runner(%{nil => {[], nil}})
+      flush_searches()
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert_received {:search, %{"q" => q}}
+      assert q =~ "updated:>=#{watermark}"
+    end
+
+    defp flush_searches do
+      receive do
+        {:search, _} -> flush_searches()
+      after
+        0 -> :ok
+      end
+    end
+
+    test "with open PRs turned off, the open PRs still indexed are deleted", %{source: source} do
+      source
+      |> Source.update_changeset(%{config: %{"pull_requests" => true}})
+      |> Repo.update!()
+
+      indexed!(source, "pulls/7", %{"state" => "open"})
+      indexed!(source, "pulls/8", %{"state" => "merged"})
+      runner(%{nil => {[], nil}})
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert [%{path: "pulls/7", status: "deleted"}] = staged_rows(source)
+
+      assert_received {:search, %{"q" => q}}
+      assert q =~ " is:merged "
+    end
+
+    test "with pull_requests turned off, every PR is deleted and the watermark cleared", %{
+      source: source
+    } do
+      source |> Source.update_changeset(%{config: %{}}) |> Repo.update!()
+      indexed!(source, "pulls/7", %{"state" => "open"})
+      indexed!(source, "pulls/8")
+      indexed!(source, "README.md")
+
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"last_sha" => "abc", "prs_updated_since" => "2026-03-01T00:00:00Z"},
+        status: :idle
+      })
+
+      # No stub: GitHub is never called.
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert [%{path: "pulls/7", status: "deleted"}, %{path: "pulls/8", status: "deleted"}] =
+               staged_rows(source)
+
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+    end
   end
 
   test "repo_from_url understands github https and ssh URLs" do

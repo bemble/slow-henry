@@ -30,11 +30,14 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
     field(:source, :string, description: "Filter by source kind: git | jira | drive")
     field(:repo, :string, description: "Filter by repo slug (see list_repos)")
     field(:lang, :string, description: "Filter by language, e.g. python, elixir")
-    field(:author, :string, description: "GitHub login: merged PRs this person authored")
-    field(:reviewer, :string, description: "GitHub login: merged PRs this person reviewed")
+    field(:author, :string, description: "GitHub login: PRs this person authored")
+    field(:reviewer, :string, description: "GitHub login: PRs this person reviewed")
 
-    field(:involves, :string,
-      description: "GitHub login: merged PRs this person authored or reviewed"
+    field(:involves, :string, description: "GitHub login: PRs this person authored or reviewed")
+
+    field(:pr_state, :string,
+      description:
+        "\"open\" or \"merged\": PRs in that state (open ones where the repo indexes them)"
     )
 
     field(:issue_type, :string, description: "Jira issue type, e.g. Bug, Story, Task, Epic")
@@ -78,6 +81,7 @@ defmodule RetrievalNode.MCP.Tools.SemanticSearch do
             :assignee,
             :reporter,
             :parent,
+            :pr_state,
             :rerank,
             :graph
           ])

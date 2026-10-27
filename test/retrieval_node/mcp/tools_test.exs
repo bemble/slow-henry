@@ -205,6 +205,31 @@ defmodule RetrievalNode.MCP.ToolsTest do
       assert length(paths.(%{})) == 4
     end
 
+    test "pr_state narrows to open or merged PRs; a PR without a state is merged" do
+      source =
+        Repo.insert!(%Source{source_type: :git_repo, name: "acme/app", identifier: "file:///a"})
+
+      pr = fn n, metadata ->
+        insert_chunk(source, :git_repo, "blorptask change #{n}",
+          metadata: Map.merge(%{"path" => "pulls/#{n}", "pr" => n}, metadata)
+        )
+      end
+
+      pr.(1, %{"state" => "open"})
+      pr.(2, %{"state" => "merged"})
+      pr.(3, %{})
+      insert_chunk(source, :git_repo, "blorptask in code", metadata: %{"path" => "lib/b.ex"})
+
+      paths = fn params ->
+        %{"results" => results} = ok(SemanticSearch, Map.put(params, :query, "blorptask"))
+        results |> Enum.map(& &1["metadata"]["path"]) |> Enum.sort()
+      end
+
+      assert paths.(%{pr_state: "open"}) == ["pulls/1"]
+      assert paths.(%{pr_state: "Merged"}) == ["pulls/2", "pulls/3"]
+      assert length(paths.(%{})) == 4
+    end
+
     test "issue_type / assignee / reporter / parent narrow Jira issues" do
       source = Repo.insert!(%Source{source_type: :jira_project, name: "Jira: P", identifier: "P"})
 

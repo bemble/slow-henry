@@ -11,6 +11,7 @@ defmodule RetrievalNode.SourcesFile do
       # active = false                              # keep indexed chunks, stop syncing
       # exclude = ["docs/*", "!docs/adr"]           # .gitignore-style (Ingest.PathFilter)
       # pull_requests = true                        # also index merged PRs (default false)
+      # open_pull_requests = true                   # and open ones, with pull_requests (default false)
 
       [[jira]]
       project = "CLOUD"                             # project key (the source identity)
@@ -64,7 +65,7 @@ defmodule RetrievalNode.SourcesFile do
   alias RetrievalNode.Ingest.{DrivePolicy, PathFilter}
   alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
-  alias RetrievalNode.Retrieval.Source
+  alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.TomlWriter
 
   @file_name "sources.toml"
@@ -211,7 +212,8 @@ defmodule RetrievalNode.SourcesFile do
       {"url", e.identifier},
       {"active", if(e.active, do: nil, else: false)},
       {"exclude", e.config["exclude"]},
-      {"pull_requests", e.config["pull_requests"]}
+      {"pull_requests", e.config["pull_requests"]},
+      {"open_pull_requests", e.config["open_pull_requests"]}
     ])
   end
 
@@ -398,22 +400,47 @@ defmodule RetrievalNode.SourcesFile do
 
   defp sync_jobs(_change), do: []
 
-  # PR sync when pull_requests is newly on (or the source comes back).
+  # PR sync on any PR option change (or when the source comes back): it
+  # reads the options itself, so the same job syncs or stages the deletions
+  # of what was turned off. Open PRs newly on clear the PR watermark first:
+  # those not updated since it would be missed. (Not a job arg: a sync that
+  # snoozes through a backlog re-runs with the same args.)
   defp pr_job(old, new) do
-    if new["pull_requests"] == true and old["pull_requests"] != true,
-      do: [{PullRequestSync, %{}}],
-      else: []
+    prs? = &(&1["pull_requests"] == true)
+    open? = &(prs?.(&1) and &1["open_pull_requests"] == true)
+
+    cond do
+      open?.(new) and not open?.(old) -> [:reset_pr_watermark, {PullRequestSync, %{}}]
+      prs?.(new) != prs?.(old) or open?.(new) != open?.(old) -> [{PullRequestSync, %{}}]
+      true -> []
+    end
   end
 
-  defp scope(config), do: Map.delete(config, "pull_requests")
+  defp scope(config), do: Map.drop(config, ["pull_requests", "open_pull_requests"])
 
   defp worker(%{source_type: :drive_folder}), do: DriveSync
   defp worker(%{source_type: :jira_project}), do: JiraSync
   defp worker(_entry), do: RepoSync
 
+  defp enqueue!(source, :reset_pr_watermark) do
+    from(s in SyncState,
+      where: s.source_id == ^source.id,
+      update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
+    )
+    |> Repo.update_all([])
+  end
+
+  # A job already waiting for the source (sync workers are unique per source)
+  # takes these args when they ask for more ("mode"); plain ones leave it as
+  # is.
   defp enqueue!(source, {worker, args}) do
     if Source.syncable?(source) do
-      case Oban.insert(worker.new(Map.put(args, "source_id", source.id))) do
+      opts =
+        if args == %{},
+          do: [],
+          else: [replace: [available: [:args], scheduled: [:args], retryable: [:args]]]
+
+      case Oban.insert(worker.new(Map.put(args, "source_id", source.id), opts)) do
         {:ok, _job} -> :ok
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -477,7 +504,8 @@ defmodule RetrievalNode.SourcesFile do
     active = Map.get(item, "active", true)
     exclude = Map.get(item, "exclude", [])
     pull_requests = Map.get(item, "pull_requests", false)
-    unknown = Map.keys(item) -- ~w(name url active exclude pull_requests)
+    open_pull_requests = Map.get(item, "open_pull_requests", false)
+    unknown = Map.keys(item) -- ~w(name url active exclude pull_requests open_pull_requests)
 
     cond do
       unknown != [] ->
@@ -489,8 +517,8 @@ defmodule RetrievalNode.SourcesFile do
       not Enum.any?(@url_schemes, &String.starts_with?(url, &1)) ->
         {:error, "invalid url #{inspect(url)}"}
 
-      not is_boolean(active) or not is_boolean(pull_requests) ->
-        {:error, "`active` and `pull_requests` must be true or false"}
+      not Enum.all?([active, pull_requests, open_pull_requests], &is_boolean/1) ->
+        {:error, "`active`, `pull_requests` and `open_pull_requests` must be true or false"}
 
       not PathFilter.valid?(exclude) ->
         {:error, "`exclude` must be a list of path patterns"}
@@ -502,7 +530,7 @@ defmodule RetrievalNode.SourcesFile do
            identifier: url,
            name: name,
            active: active,
-           config: git_config(exclude, pull_requests)
+           config: git_config(exclude, pull_requests, open_pull_requests)
          }}
     end
   end
@@ -511,10 +539,11 @@ defmodule RetrievalNode.SourcesFile do
 
   # Options are stored only when set, so sources configured before they
   # existed don't read as changed.
-  defp git_config(exclude, pull_requests) do
+  defp git_config(exclude, pull_requests, open_pull_requests) do
     %{}
     |> then(&if(exclude != [], do: Map.put(&1, "exclude", exclude), else: &1))
     |> then(&if(pull_requests, do: Map.put(&1, "pull_requests", true), else: &1))
+    |> then(&if(open_pull_requests, do: Map.put(&1, "open_pull_requests", true), else: &1))
   end
 
   defp jira_tables(doc) do

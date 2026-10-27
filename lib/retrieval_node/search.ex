@@ -31,6 +31,7 @@ defmodule RetrievalNode.Search do
       string (`"git_repo"`/`"jira_project"`/`"drive_folder"`)
     * `:author` / `:reviewer` / `:involves` — a GitHub login: PRs it authored,
       reviewed, or either
+    * `:pr_state` — `"open"` or `"merged"`: PRs in that state
     * `:issue_type` / `:assignee` / `:reporter` / `:parent` — Jira issues of that
       type (e.g. `"Bug"`), whose assignee or reporter display name contains
       the text, or under that parent key (an epic)
@@ -107,6 +108,7 @@ defmodule RetrievalNode.Search do
         :assignee,
         :reporter,
         :parent,
+        :pr_state,
         :graph
       ])
       |> Keyword.merge(embedding: embedding, text_query: query_text, top_k: query_top_k)

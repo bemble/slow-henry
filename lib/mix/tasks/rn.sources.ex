@@ -78,7 +78,8 @@ defmodule Mix.Tasks.Rn.Sources do
         s.name != e.name && rename(s, e),
         s.active != e.active && "active #{s.active} -> #{e.active}",
         scope(s.config) != scope(e.config) && "scope #{inspect(scope(e.config))}, full pass",
-        pr_toggle(s.config, e.config),
+        pr_toggle(s.config, e.config, "pull_requests", "merged PRs"),
+        pr_toggle(s.config, e.config, "open_pull_requests", "open PRs"),
         (e.active and not s.active) && sync_note(s)
       ]
       |> Enum.filter(& &1)
@@ -99,12 +100,13 @@ defmodule Mix.Tasks.Rn.Sources do
     end
   end
 
-  defp scope(config), do: Map.drop(config || %{}, ["pull_requests", "mirror_slug"])
+  defp scope(config),
+    do: Map.drop(config || %{}, ["pull_requests", "open_pull_requests", "mirror_slug"])
 
-  defp pr_toggle(old, new) do
-    case {(old || %{})["pull_requests"] == true, new["pull_requests"] == true} do
-      {false, true} -> "pull_requests on, PR sync"
-      {true, false} -> "pull_requests off"
+  defp pr_toggle(old, new, key, what) do
+    case {(old || %{})[key] == true, new[key] == true} do
+      {false, true} -> "#{key} on, PR sync"
+      {true, false} -> "#{key} off, #{what} removed"
       _ -> false
     end
   end

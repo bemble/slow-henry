@@ -4,7 +4,7 @@ defmodule RetrievalNode.SourcesFileTest do
 
   alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
-  alias RetrievalNode.Retrieval.Source
+  alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.SourcesFile
 
   @url_a "https://github.com/my-org/adr.git"
@@ -69,7 +69,8 @@ defmodule RetrievalNode.SourcesFileTest do
       assert {:error, "[[git]] #1: unknown key(s) branch"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"branch" => "main"})]})
 
-      assert {:error, "[[git]] #1: `active` and `pull_requests` must be true or false"} =
+      assert {:error,
+              "[[git]] #1: `active`, `pull_requests` and `open_pull_requests` must be true or false"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"active" => "no"})]})
     end
 
@@ -132,6 +133,19 @@ defmodule RetrievalNode.SourcesFileTest do
       assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
     end
 
+    test "a full pass upgrades a repo sync still waiting" do
+      source = source!("adr", @url_a)
+      {:ok, _} = Oban.insert(RepoSync.new(%{"source_id" => source.id}))
+
+      {:ok, entries} =
+        SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"exclude" => ["docs"]})]})
+
+      SourcesFile.apply(entries)
+
+      assert [%{args: %{"mode" => "full"}}] =
+               Repo.all(from j in Oban.Job, where: j.worker == ^inspect(RepoSync))
+    end
+
     test "changing exclude queues a full pass; turning on pull_requests queues only a PR sync" do
       source = source!("adr", @url_a)
 
@@ -151,6 +165,70 @@ defmodule RetrievalNode.SourcesFileTest do
       SourcesFile.apply(entries)
       assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
       refute_enqueued(worker: RepoSync)
+    end
+  end
+
+  describe "open_pull_requests" do
+    defp prs!(source, config) do
+      {:ok, entries} = SourcesFile.parse(%{"git" => [git("adr", @url_a, config)]})
+      SourcesFile.apply(entries)
+      Repo.get!(Source, source.id)
+    end
+
+    test "is stored only when set, and must be a boolean" do
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{
+                 "git" => [
+                   git("adr", @url_a, %{"pull_requests" => true, "open_pull_requests" => true})
+                 ]
+               })
+
+      assert config == %{"pull_requests" => true, "open_pull_requests" => true}
+
+      assert {:error, _} =
+               SourcesFile.parse(%{
+                 "git" => [git("adr", @url_a, %{"open_pull_requests" => "yes"})]
+               })
+    end
+
+    test "turning it on clears the PR watermark and queues a PR sync, never a repo pass" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"pull_requests" => true})
+      Repo.delete_all(Oban.Job)
+
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"last_sha" => "abc", "prs_updated_since" => "2026-03-01T00:00:00Z"},
+        status: :idle
+      })
+
+      prs!(source, %{"pull_requests" => true, "open_pull_requests" => true})
+
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+    end
+
+    test "turning it or pull_requests off queues a PR sync, which removes them" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"pull_requests" => true, "open_pull_requests" => true})
+      Repo.delete_all(Oban.Job)
+
+      source = prs!(source, %{"pull_requests" => true})
+      assert source.config == %{"pull_requests" => true}
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      Repo.delete_all(Oban.Job)
+
+      source = prs!(source, %{})
+      assert source.config == %{}
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+    end
+
+    test "is ignored without pull_requests" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"open_pull_requests" => true})
+      refute_enqueued(worker: PullRequestSync)
     end
   end
 
@@ -560,7 +638,8 @@ defmodule RetrievalNode.SourcesFileTest do
             git("core", @url_b, %{
               "active" => false,
               "exclude" => ["docs/*", "!docs/\"quoted\""],
-              "pull_requests" => true
+              "pull_requests" => true,
+              "open_pull_requests" => true
             })
           ],
           "jira" => [
