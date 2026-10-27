@@ -64,6 +64,10 @@ config :retrieval_node, Oban,
        # Issues of the git sources that opted in (issues = true).
        {"45 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler,
         args: %{"kind" => "git_issues"}},
+       # Releases of the git sources that opted in (releases = true), after
+       # the :45 repo fetch so new tags are in the mirror.
+       {"50 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler,
+        args: %{"kind" => "git_releases"}},
        {"0 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "jira"}},
        {"*/30 * * * *", RetrievalNode.Ingest.Workers.SyncScheduler, args: %{"kind" => "drive"}},
        # Daily full Drive pass (scope/classification drift the changes feed can't

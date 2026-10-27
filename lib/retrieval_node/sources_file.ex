@@ -14,7 +14,8 @@ defmodule RetrievalNode.SourcesFile do
       # open_pull_requests = true                   # and open ones, with pull_requests (default false)
       # bot_pull_requests = true                    # and open ones bots opened, with open_pull_requests (default false)
       # issues = true                               # also index issues, open and closed (default false)
-      # max_age = "2y"                              # drop non-code data (PRs, issues) older than this: <n>d|w|m|y (Ingest.MaxAge)
+      # releases = true                             # also index releases, with the PRs they contain (default false)
+      # max_age = "2y"                              # drop non-code data (PRs, issues, releases) older than this: <n>d|w|m|y (Ingest.MaxAge)
 
       [[jira]]
       project = "CLOUD"                             # project key (the source identity)
@@ -66,7 +67,16 @@ defmodule RetrievalNode.SourcesFile do
   import Ecto.Query
 
   alias RetrievalNode.Ingest.{DrivePolicy, MaxAge, PathFilter}
-  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
+
+  alias RetrievalNode.Ingest.Workers.{
+    DriveSync,
+    IssueSync,
+    JiraSync,
+    PullRequestSync,
+    ReleaseSync,
+    RepoSync
+  }
+
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.TomlWriter
@@ -83,7 +93,7 @@ defmodule RetrievalNode.SourcesFile do
   @project_key_format ~r/\A[A-Z][A-Z0-9_]*\z/
   @jira_options ~w(assignee reporter parent)
   # The boolean GitHub options of a git source.
-  @github_options ~w(pull_requests open_pull_requests bot_pull_requests issues)
+  @github_options ~w(pull_requests open_pull_requests bot_pull_requests issues releases)
   @header """
   # Sources indexed by Slow Henry (git repos, Jira projects, Google Drive),
   # written by the Sources editor (/sources/edit). Hand edits work too, but the
@@ -221,6 +231,7 @@ defmodule RetrievalNode.SourcesFile do
       {"open_pull_requests", e.config["open_pull_requests"]},
       {"bot_pull_requests", e.config["bot_pull_requests"]},
       {"issues", e.config["issues"]},
+      {"releases", e.config["releases"]},
       {"max_age", e.config["max_age"]}
     ])
   end
@@ -414,7 +425,11 @@ defmodule RetrievalNode.SourcesFile do
   # `max_age`, clear the PR watermark first: PRs not updated since it would
   # be missed (a narrower window just purges, at that run). (Not a job arg:
   # a sync that snoozes through a backlog re-runs with the same args.)
-  defp github_jobs(old, new), do: pr_job(old, new) ++ issue_job(old, new)
+  defp github_jobs(old, new) do
+    pr_job(old, new) ++
+      option_job(old, new, "issues", IssueSync, "issues_updated_since") ++
+      option_job(old, new, "releases", ReleaseSync, nil)
+  end
 
   defp pr_job(old, new) do
     {old, new} = {pr_options(old), pr_options(new)}
@@ -446,17 +461,19 @@ defmodule RetrievalNode.SourcesFile do
     }
   end
 
-  # Issue sync when `issues` is turned on or off (the job purges), or when
-  # `max_age` changes while it's on (re-read, as for PRs).
-  defp issue_job(old, new) do
-    on? = &(&1["issues"] == true)
+  # The `option`'s sync (issues, releases) when it is turned on or off (the
+  # job purges), or when `max_age` changes while it's on: re-read from the
+  # start, its `watermark` cleared when it has one (releases are all listed
+  # each run).
+  defp option_job(old, new, option, worker, watermark) do
+    on? = &(&1[option] == true)
 
     cond do
       on?.(old) and on?.(new) and old["max_age"] != new["max_age"] ->
-        [{:reset_watermark, "issues_updated_since"}, {IssueSync, %{}}]
+        if(watermark, do: [{:reset_watermark, watermark}], else: []) ++ [{worker, %{}}]
 
       on?.(old) != on?.(new) ->
-        [{IssueSync, %{}}]
+        [{worker, %{}}]
 
       true ->
         []
@@ -584,7 +601,8 @@ defmodule RetrievalNode.SourcesFile do
   defp git_options_error(booleans, exclude, max_age) do
     cond do
       not Enum.all?(booleans, &is_boolean/1) ->
-        "`active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests` and `issues` must be true or false"
+        "`active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests`, `issues` " <>
+          "and `releases` must be true or false"
 
       not PathFilter.valid?(exclude) ->
         "`exclude` must be a list of path patterns"

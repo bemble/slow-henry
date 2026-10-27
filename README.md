@@ -16,7 +16,7 @@ exposed to clients as **MCP tools** over HTTP.
 ## What it does
 
 - **Three sources, one index:** git repos (bare mirrors, with their GitHub
-  pull requests and issues on request), Google Docs and resolved Jira
+  pull requests, issues and releases on request), Google Docs and resolved Jira
   issues are chunked and embedded into a single store, so one
   query ranks across all of them.
 - **Hybrid retrieval:** pgvector cosine similarity (HNSW) + Postgres full-text
@@ -35,7 +35,9 @@ exposed to clients as **MCP tools** over HTTP.
   before anything is embedded, and an append-only audit log records what was
   found (hash only).
 - **MCP tools:** `semantic_search`, `grep`, `get_file` (git),
-  `get_document` (Drive doc / Jira issue text), `list_repos`, at `/mcp`.
+  `get_document` (Drive doc / Jira issue text), `list_repos`, `related_code`,
+  `list_releases` (a repo's GitHub releases, the ones that shipped a PR), at
+  `/mcp`.
 - **Web UI** (LAN-only, no auth, like `/mcp`):
   - `/` — sources with file/chunk/pending counts, sync status and a Sync button,
     Oban job errors, and database size per table;
@@ -248,7 +250,8 @@ url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # open_pull_requests = true                    # and open ones, with pull_requests (default false)
 # bot_pull_requests = true                     # and open ones bots opened, with open_pull_requests (default false)
 # issues = true                                # also index issues, open and closed (default false)
-# max_age = "2y"                               # drop non-code data (PRs, issues) older than this: <n>d, w, m or y
+# releases = true                              # also index releases, with the PRs they contain (default false)
+# max_age = "2y"                               # drop non-code data (PRs, issues, releases) older than this: <n>d, w, m or y
 
 [[jira]]
 project = "CLOUD"                # project key (the source identity)
@@ -267,7 +270,7 @@ The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
 URL), each with its GitHub options (merged, open and open bot PRs, issues,
-max age),
+releases, max age),
 Jira projects are added by key with their options, `exclude` patterns
 and Drive ids are plain text fields (a pasted Drive folder URL is turned into
 its id), and a review step shows what will change
@@ -320,10 +323,24 @@ are kept, marked `bot`. `semantic_search`'s `issue_state` filter (`"open"` /
 author or assignees. They are synced hourly; turning the option off removes
 them.
 
+`releases = true` indexes the repo's published GitHub releases (drafts left
+out, pre-releases kept and marked), one document each under
+`releases/<tag>`: tag, date, author, URL, the notes, then the pull requests
+and other commits it contains since the previous release. Those come from
+the git mirror, not from the API: the first-parent history between the two
+tags, PR numbers read from squash (`Fix login (#123)`) and merge (`Merge pull
+request #123 …`) commits. The previous release is the newest earlier one the
+tag descends from, pre-releases skipped for a stable one, so `1.9.1` on a
+maintenance branch is compared to `1.9.0`, and `2.0.0` to `1.9.0` rather than
+to its last beta. The `list_releases` MCP tool lists a repo's releases, the
+ones that shipped a given PR (`pr`), or one release's whole document (`tag`).
+They are synced hourly; turning the option off removes them.
+
 `max_age = "2y"` (a number and `d`, `w`, `m` or `y`) limits a repo's
-non-code data — its pull requests and issues — to a rolling window: a
-merged PR (closed issue) is kept while its merge (closing) is younger than
-that, an open one while its last activity is. Each sync drops what left the
+non-code data — its pull requests, issues and releases — to a rolling
+window: a merged PR (closed issue, release) is kept while its merge
+(closing, publication) is younger than that, an open one while its last
+activity is. Each sync drops what left the
 window, and changing the value re-reads their history. The code itself is
 never limited.
 
@@ -415,7 +432,7 @@ When the server runs on another machine than the browser, Google's redirect to
 
 ### GitHub
 
-Merged pull requests, and clones of private `https://github.com/` repos, use
+Pull requests, issues, releases, and clones of private `https://github.com/` repos, use
 the token of a **GitHub App**, obtained through the device flow — no `gh` CLI,
 no redirect, so it works on a headless server. The token can only do what the
 App's permissions allow, on the repos where the App is installed and you have
@@ -425,8 +442,9 @@ One-time setup:
 
 1. GitHub → Settings → Developer settings → **GitHub Apps** → New GitHub App.
    Any homepage URL; **uncheck Webhook**; check **Enable Device Flow**.
-2. Repository permissions, all **read-only**: Contents, Pull requests (Metadata
-   is added automatically). Nothing else.
+2. Repository permissions, all **read-only**: Contents (code and releases),
+   Pull requests, Issues (for `issues = true`); Metadata is added
+   automatically. Nothing else.
 3. Create it, note the **Client ID**, generate a **client secret**, and set
    `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. If the App must be installed on
    an organization you don't own, make it installable by **Any account**.
@@ -438,7 +456,7 @@ One-time setup:
    tokens 6 months when unused). **Disconnect** forgets it.
 
 `GITHUB_TOKEN`, if set, is used instead and never refreshed. Without any token,
-PR syncs are cancelled and git falls back to its own credential helper.
+PR, issue and release syncs are cancelled and git falls back to its own credential helper.
 
 ## Project plan
 

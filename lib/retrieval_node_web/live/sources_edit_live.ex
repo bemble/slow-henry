@@ -90,6 +90,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       open_pull_requests: entry.config["open_pull_requests"] == true,
       bot_pull_requests: entry.config["bot_pull_requests"] == true,
       issues: entry.config["issues"] == true,
+      releases: entry.config["releases"] == true,
       max_age: entry.config["max_age"] || "",
       exclude: entry.config["exclude"] || []
     }
@@ -355,6 +356,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         open_pull_requests: params["open_pull_requests"] == "true",
         bot_pull_requests: params["bot_pull_requests"] == "true",
         issues: params["issues"] == "true",
+        releases: params["releases"] == "true",
         max_age: params["max_age"] || row.max_age,
         exclude: params["exclude"] || []
     }
@@ -450,6 +452,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       open_pull_requests: false,
       bot_pull_requests: false,
       issues: false,
+      releases: false,
       max_age: "",
       exclude: []
     }
@@ -484,6 +487,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           "open_pull_requests" => r.pull_requests and r.open_pull_requests,
           "bot_pull_requests" => r.pull_requests and r.open_pull_requests and r.bot_pull_requests,
           "issues" => r.issues,
+          "releases" => r.releases,
           "max_age" => r.max_age |> String.trim() |> blank_to_nil(),
           "exclude" => non_blank(r.exclude)
         }
@@ -943,8 +947,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             value={@row.issues}
             label="Issues"
           />
+          <.input
+            type="checkbox"
+            id={"#{@row.key}-releases"}
+            name={"repos[#{@row.key}][releases]"}
+            value={@row.releases}
+            label="Releases"
+          />
         </div>
-        <div class="w-28" title="Drop PRs and issues older than this (merged or closed, or last updated when open): 90d, 6m, 2y…">
+        <div class="w-28" title="Drop PRs, issues and releases older than this (merged, closed or published, or last updated when open): 90d, 6m, 2y…">
           <.input
             id={"#{@row.key}-max-age"}
             name={"repos[#{@row.key}][max_age]"}

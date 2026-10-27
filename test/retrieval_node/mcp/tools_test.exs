@@ -12,6 +12,7 @@ defmodule RetrievalNode.MCP.ToolsTest do
     GetDocument,
     GetFile,
     Grep,
+    ListReleases,
     ListRepos,
     RelatedCode,
     SemanticSearch
@@ -631,6 +632,90 @@ defmodule RetrievalNode.MCP.ToolsTest do
       assert err(GetDocument, %{source: "drive", id: "nope"}) =~ "not indexed"
       assert err(GetDocument, %{source: "drive", id: "  "}) =~ "not indexed"
       assert err(GetDocument, %{source: "git", id: "x"}) =~ "unknown source"
+    end
+  end
+
+  describe "list_releases" do
+    setup do
+      source = Repo.insert!(%Source{source_type: :git_repo, name: "app", identifier: "file:///a"})
+
+      release = fn tag, published_at, prs, extra ->
+        Map.merge(
+          %{
+            "path" => "releases/#{tag}",
+            "name" => "Release #{tag}",
+            "release" => tag,
+            "published_at" => published_at,
+            "prs" => prs,
+            "url" => "https://github.com/acme/app/releases/tag/#{tag}",
+            "author" => "alice",
+            "release_key" => "k",
+            "chunk_index" => 0
+          },
+          extra
+        )
+      end
+
+      insert_chunk(source, :git_repo, "# v1.0.0",
+        repo: "app",
+        metadata: release.("v1.0.0", "2026-01-01T00:00:00Z", [1, 2], %{})
+      )
+
+      insert_chunk(source, :git_repo, "# v1.1.0",
+        repo: "app",
+        metadata: release.("v1.1.0", "2026-02-01T00:00:00Z", [3], %{"previous" => "v1.0.0"})
+      )
+
+      insert_chunk(source, :git_repo, "## Pull requests\n\n- #3 Fix",
+        repo: "app",
+        metadata: release.("v1.1.0", "2026-02-01T00:00:00Z", [3], %{"chunk_index" => 1})
+      )
+
+      # Not a release: never listed.
+      insert_chunk(source, :git_repo, "PR",
+        repo: "app",
+        metadata: %{"pr" => 3, "chunk_index" => 0}
+      )
+
+      :ok
+    end
+
+    test "lists a repo's releases, newest first" do
+      assert %{"repo" => "app", "releases" => [newest, oldest]} =
+               ok(ListReleases, %{repo: "app"})
+
+      assert newest == %{
+               "release" => "v1.1.0",
+               "name" => "Release v1.1.0",
+               "published_at" => "2026-02-01T00:00:00Z",
+               "previous" => "v1.0.0",
+               "prs" => [3],
+               "url" => "https://github.com/acme/app/releases/tag/v1.1.0",
+               "author" => "alice"
+             }
+
+      assert oldest["release"] == "v1.0.0"
+    end
+
+    test "with pr, only the releases that shipped it" do
+      assert %{"releases" => [%{"release" => "v1.0.0"}]} =
+               ok(ListReleases, %{repo: "app", pr: 2})
+
+      assert %{"releases" => []} = ok(ListReleases, %{repo: "app", pr: 9})
+    end
+
+    test "with tag, the release's whole document" do
+      assert %{"release" => "v1.1.0", "metadata" => metadata, "content" => content} =
+               ok(ListReleases, %{repo: "app", tag: "v1.1.0"})
+
+      assert content == "# v1.1.0\n\n## Pull requests\n\n- #3 Fix"
+      refute Map.has_key?(metadata, "release_key")
+      assert metadata["prs"] == [3]
+    end
+
+    test "an unknown repo or tag is an error" do
+      assert err(ListReleases, %{repo: "nope"}) =~ "repo not found"
+      assert err(ListReleases, %{repo: "app", tag: "v9"}) =~ "not indexed"
     end
   end
 

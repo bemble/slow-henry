@@ -2,7 +2,15 @@ defmodule RetrievalNode.SourcesFileTest do
   use RetrievalNode.DataCase, async: true
   use Oban.Testing, repo: RetrievalNode.Repo
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{
+    DriveSync,
+    IssueSync,
+    JiraSync,
+    PullRequestSync,
+    ReleaseSync,
+    RepoSync
+  }
+
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.SourcesFile
@@ -70,7 +78,7 @@ defmodule RetrievalNode.SourcesFileTest do
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"branch" => "main"})]})
 
       assert {:error,
-              "[[git]] #1: `active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests` and `issues` must be true or false"} =
+              "[[git]] #1: `active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests`, `issues` and `releases` must be true or false"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"active" => "no"})]})
     end
 
@@ -332,6 +340,48 @@ defmodule RetrievalNode.SourcesFileTest do
       assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
       assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
       assert_enqueued(worker: IssueSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+    end
+  end
+
+  describe "releases" do
+    test "is stored only when set, and must be a boolean" do
+      assert {:ok, [%{config: %{"releases" => true}}]} =
+               SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"releases" => true})]})
+
+      assert {:error, _} =
+               SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"releases" => 1})]})
+    end
+
+    test "turning it on or off queues a release sync, never a repo pass" do
+      source = source!("adr", @url_a)
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, %{"releases" => true})
+      assert_enqueued(worker: ReleaseSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+      refute_enqueued(worker: IssueSync)
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, %{})
+      assert_enqueued(worker: ReleaseSync, args: %{"source_id" => source.id})
+    end
+
+    test "a max_age change queues a release sync, the cursor untouched" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"releases" => true})
+      Repo.delete_all(Oban.Job)
+
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"last_sha" => "abc"},
+        status: :idle
+      })
+
+      prs!(source, %{"releases" => true, "max_age" => "1y"})
+
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+      assert_enqueued(worker: ReleaseSync, args: %{"source_id" => source.id})
       refute_enqueued(worker: RepoSync)
     end
   end
