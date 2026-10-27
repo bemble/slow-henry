@@ -2,7 +2,7 @@ defmodule RetrievalNode.SourcesFileTest do
   use RetrievalNode.DataCase, async: true
   use Oban.Testing, repo: RetrievalNode.Repo
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.SourcesFile
@@ -70,7 +70,7 @@ defmodule RetrievalNode.SourcesFileTest do
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"branch" => "main"})]})
 
       assert {:error,
-              "[[git]] #1: `active`, `pull_requests`, `open_pull_requests` and `bot_pull_requests` must be true or false"} =
+              "[[git]] #1: `active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests` and `issues` must be true or false"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"active" => "no"})]})
     end
 
@@ -278,6 +278,61 @@ defmodule RetrievalNode.SourcesFileTest do
 
       prs!(source, %{"pull_requests" => true, "bot_pull_requests" => true})
       refute_enqueued(worker: PullRequestSync)
+    end
+  end
+
+  describe "issues" do
+    test "is stored only when set, and must be a boolean" do
+      assert {:ok, [%{config: %{"issues" => true}}]} =
+               SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"issues" => true})]})
+
+      assert {:error, _} =
+               SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"issues" => "yes"})]})
+    end
+
+    test "a new source with issues gets an issue sync" do
+      {:ok, entries} = SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"issues" => true})]})
+      SourcesFile.apply(entries)
+      source = Repo.get_by!(Source, identifier: @url_a)
+      assert_enqueued(worker: IssueSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: PullRequestSync)
+    end
+
+    test "turning it on or off queues an issue sync, never a repo pass or a PR sync" do
+      source = source!("adr", @url_a)
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, %{"issues" => true})
+      assert_enqueued(worker: IssueSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+      refute_enqueued(worker: PullRequestSync)
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, %{})
+      assert_enqueued(worker: IssueSync, args: %{"source_id" => source.id})
+    end
+
+    test "a max_age change clears both watermarks and queues both syncs" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"pull_requests" => true, "issues" => true})
+      Repo.delete_all(Oban.Job)
+
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{
+          "last_sha" => "abc",
+          "prs_updated_since" => "2026-03-01T00:00:00Z",
+          "issues_updated_since" => "2026-03-01T00:00:00Z"
+        },
+        status: :idle
+      })
+
+      prs!(source, %{"pull_requests" => true, "issues" => true, "max_age" => "1y"})
+
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      assert_enqueued(worker: IssueSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
     end
   end
 

@@ -13,7 +13,8 @@ defmodule RetrievalNode.SourcesFile do
       # pull_requests = true                        # also index merged PRs (default false)
       # open_pull_requests = true                   # and open ones, with pull_requests (default false)
       # bot_pull_requests = true                    # and open ones bots opened, with open_pull_requests (default false)
-      # max_age = "2y"                              # drop non-code data (PRs) older than this: <n>d|w|m|y (Ingest.MaxAge)
+      # issues = true                               # also index issues, open and closed (default false)
+      # max_age = "2y"                              # drop non-code data (PRs, issues) older than this: <n>d|w|m|y (Ingest.MaxAge)
 
       [[jira]]
       project = "CLOUD"                             # project key (the source identity)
@@ -65,7 +66,7 @@ defmodule RetrievalNode.SourcesFile do
   import Ecto.Query
 
   alias RetrievalNode.Ingest.{DrivePolicy, MaxAge, PathFilter}
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Source, SyncState}
   alias RetrievalNode.TomlWriter
@@ -81,7 +82,8 @@ defmodule RetrievalNode.SourcesFile do
   @drive_id_format ~r/\A[A-Za-z0-9_-]+\z/
   @project_key_format ~r/\A[A-Z][A-Z0-9_]*\z/
   @jira_options ~w(assignee reporter parent)
-  @pr_options ~w(pull_requests open_pull_requests bot_pull_requests)
+  # The boolean GitHub options of a git source.
+  @github_options ~w(pull_requests open_pull_requests bot_pull_requests issues)
   @header """
   # Sources indexed by Slow Henry (git repos, Jira projects, Google Drive),
   # written by the Sources editor (/sources/edit). Hand edits work too, but the
@@ -218,6 +220,7 @@ defmodule RetrievalNode.SourcesFile do
       {"pull_requests", e.config["pull_requests"]},
       {"open_pull_requests", e.config["open_pull_requests"]},
       {"bot_pull_requests", e.config["bot_pull_requests"]},
+      {"issues", e.config["issues"]},
       {"max_age", e.config["max_age"]}
     ])
   end
@@ -384,7 +387,7 @@ defmodule RetrievalNode.SourcesFile do
 
   # The {worker, extra args} jobs a change calls for.
   defp sync_jobs({:add, %{active: false}}), do: []
-  defp sync_jobs({:add, e}), do: [{worker(e), %{}} | pr_job(%{}, e.config)]
+  defp sync_jobs({:add, e}), do: [{worker(e), %{}} | github_jobs(%{}, e.config)]
 
   defp sync_jobs({:update, _s, %{active: false}}), do: []
 
@@ -400,7 +403,7 @@ defmodule RetrievalNode.SourcesFile do
         true -> []
       end
 
-    main ++ pr_job(if(s.active, do: old, else: %{}), e.config)
+    main ++ github_jobs(if(s.active, do: old, else: %{}), e.config)
   end
 
   defp sync_jobs(_change), do: []
@@ -411,6 +414,8 @@ defmodule RetrievalNode.SourcesFile do
   # `max_age`, clear the PR watermark first: PRs not updated since it would
   # be missed (a narrower window just purges, at that run). (Not a job arg:
   # a sync that snoozes through a backlog re-runs with the same args.)
+  defp github_jobs(old, new), do: pr_job(old, new) ++ issue_job(old, new)
+
   defp pr_job(old, new) do
     {old, new} = {pr_options(old), pr_options(new)}
     newly_on? = &(new[&1] and not old[&1])
@@ -418,7 +423,7 @@ defmodule RetrievalNode.SourcesFile do
 
     cond do
       newly_on?.(:open) or newly_on?.(:bots) or age_changed? ->
-        [:reset_pr_watermark, {PullRequestSync, %{}}]
+        [{:reset_watermark, "prs_updated_since"}, {PullRequestSync, %{}}]
 
       Map.delete(old, :max_age) != Map.delete(new, :max_age) ->
         [{PullRequestSync, %{}}]
@@ -441,16 +446,33 @@ defmodule RetrievalNode.SourcesFile do
     }
   end
 
-  defp scope(config), do: Map.drop(config, ["max_age" | @pr_options])
+  # Issue sync when `issues` is turned on or off (the job purges), or when
+  # `max_age` changes while it's on (re-read, as for PRs).
+  defp issue_job(old, new) do
+    on? = &(&1["issues"] == true)
+
+    cond do
+      on?.(old) and on?.(new) and old["max_age"] != new["max_age"] ->
+        [{:reset_watermark, "issues_updated_since"}, {IssueSync, %{}}]
+
+      on?.(old) != on?.(new) ->
+        [{IssueSync, %{}}]
+
+      true ->
+        []
+    end
+  end
+
+  defp scope(config), do: Map.drop(config, ["max_age" | @github_options])
 
   defp worker(%{source_type: :drive_folder}), do: DriveSync
   defp worker(%{source_type: :jira_project}), do: JiraSync
   defp worker(_entry), do: RepoSync
 
-  defp enqueue!(source, :reset_pr_watermark) do
+  defp enqueue!(source, {:reset_watermark, key}) do
     from(s in SyncState,
       where: s.source_id == ^source.id,
-      update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
+      update: [set: [cursor: fragment("? - ?::text", s.cursor, ^key)]]
     )
     |> Repo.update_all([])
   end
@@ -528,9 +550,9 @@ defmodule RetrievalNode.SourcesFile do
        when is_binary(name) and is_binary(url) do
     active = Map.get(item, "active", true)
     exclude = Map.get(item, "exclude", [])
-    pr_options = for o <- @pr_options, do: Map.get(item, o, false)
+    options = for o <- @github_options, do: Map.get(item, o, false)
     max_age = Map.get(item, "max_age")
-    unknown = Map.keys(item) -- ["name", "url", "active", "exclude", "max_age" | @pr_options]
+    unknown = Map.keys(item) -- ["name", "url", "active", "exclude", "max_age" | @github_options]
 
     cond do
       unknown != [] ->
@@ -542,7 +564,7 @@ defmodule RetrievalNode.SourcesFile do
       not Enum.any?(@url_schemes, &String.starts_with?(url, &1)) ->
         {:error, "invalid url #{inspect(url)}"}
 
-      error = git_options_error([active | pr_options], exclude, max_age) ->
+      error = git_options_error([active | options], exclude, max_age) ->
         {:error, error}
 
       true ->
@@ -552,7 +574,7 @@ defmodule RetrievalNode.SourcesFile do
            identifier: url,
            name: name,
            active: active,
-           config: git_config(exclude, Enum.zip(@pr_options, pr_options), max_age)
+           config: git_config(exclude, Enum.zip(@github_options, options), max_age)
          }}
     end
   end
@@ -562,7 +584,7 @@ defmodule RetrievalNode.SourcesFile do
   defp git_options_error(booleans, exclude, max_age) do
     cond do
       not Enum.all?(booleans, &is_boolean/1) ->
-        "`active`, `pull_requests`, `open_pull_requests` and `bot_pull_requests` must be true or false"
+        "`active`, `pull_requests`, `open_pull_requests`, `bot_pull_requests` and `issues` must be true or false"
 
       not PathFilter.valid?(exclude) ->
         "`exclude` must be a list of path patterns"
@@ -577,12 +599,12 @@ defmodule RetrievalNode.SourcesFile do
 
   # Options are stored only when set, so sources configured before they
   # existed don't read as changed.
-  defp git_config(exclude, pr_options, max_age) do
+  defp git_config(exclude, options, max_age) do
     base =
       %{"exclude" => exclude, "max_age" => max_age}
       |> Map.reject(fn {_key, value} -> value in [nil, []] end)
 
-    for {option, true} <- pr_options, into: base, do: {option, true}
+    for {option, true} <- options, into: base, do: {option, true}
   end
 
   defp jira_tables(doc) do

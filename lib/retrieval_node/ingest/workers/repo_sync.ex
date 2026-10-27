@@ -87,6 +87,11 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
+  # Metadata keys of the documents other workers index in a git source
+  # under virtual paths (PullRequestSync: `pulls/<n>`, IssueSync:
+  # `issues/<n>`): never in the tree.
+  @virtual_keys ~w(pr issue)
+
   @lang_by_ext %{
     "py" => "python",
     "js" => "javascript",
@@ -296,17 +301,21 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
   # Paths present at HEAD are never touched here: skip rules (binary,
   # lockfile, oversized) already stage their own deletion in raw_row/5, so the
   # index follows the current rules; unreadable-but-present files stay as-is.
+  # Documents other workers add to the source under virtual paths (PRs,
+  # issues: `@virtual_keys`) are never in the tree, and are left to them.
   defp stale_deletion_rows(source, slug, head_entries) do
     at_head = MapSet.new(head_entries, &elem(&1, 1))
 
     chunk_paths =
       from c in Chunk,
-        where: c.source_id == ^source.id,
+        where: c.source_id == ^source.id and not fragment("? \\?| ?", c.metadata, ^@virtual_keys),
         select: %{path: fragment("?->>'path'", c.metadata)}
 
     pending_paths =
       from p in PendingChunk,
-        where: p.source_id == ^source.id and p.status == "raw",
+        where:
+          p.source_id == ^source.id and p.status == "raw" and
+            not fragment("? \\?| ?", p.metadata, ^@virtual_keys),
         select: %{path: fragment("?->>'path'", p.metadata)}
 
     from(u in subquery(union(chunk_paths, ^pending_paths)), select: u.path)

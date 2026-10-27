@@ -89,6 +89,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       pull_requests: entry.config["pull_requests"] == true,
       open_pull_requests: entry.config["open_pull_requests"] == true,
       bot_pull_requests: entry.config["bot_pull_requests"] == true,
+      issues: entry.config["issues"] == true,
       max_age: entry.config["max_age"] || "",
       exclude: entry.config["exclude"] || []
     }
@@ -353,6 +354,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         # Disabled (so not sent) while PRs (open PRs) are off.
         open_pull_requests: params["open_pull_requests"] == "true",
         bot_pull_requests: params["bot_pull_requests"] == "true",
+        issues: params["issues"] == "true",
         max_age: params["max_age"] || row.max_age,
         exclude: params["exclude"] || []
     }
@@ -447,6 +449,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       pull_requests: false,
       open_pull_requests: false,
       bot_pull_requests: false,
+      issues: false,
       max_age: "",
       exclude: []
     }
@@ -480,6 +483,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           "pull_requests" => r.pull_requests,
           "open_pull_requests" => r.pull_requests and r.open_pull_requests,
           "bot_pull_requests" => r.pull_requests and r.open_pull_requests and r.bot_pull_requests,
+          "issues" => r.issues,
           "max_age" => r.max_age |> String.trim() |> blank_to_nil(),
           "exclude" => non_blank(r.exclude)
         }
@@ -932,8 +936,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             disabled={not (@row.pull_requests and @row.open_pull_requests)}
             label="Open bot PRs"
           />
+          <.input
+            type="checkbox"
+            id={"#{@row.key}-issues"}
+            name={"repos[#{@row.key}][issues]"}
+            value={@row.issues}
+            label="Issues"
+          />
         </div>
-        <div class="w-28" title="Drop PRs older than this (merged, or last updated when open): 90d, 6m, 2y…">
+        <div class="w-28" title="Drop PRs and issues older than this (merged or closed, or last updated when open): 90d, 6m, 2y…">
           <.input
             id={"#{@row.key}-max-age"}
             name={"repos[#{@row.key}][max_age]"}

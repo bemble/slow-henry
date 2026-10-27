@@ -8,7 +8,7 @@ defmodule RetrievalNode.Search.HybridQuery do
   at the edge of what the macro DSL expresses cleanly, and the load-bearing
   correctness property is far easier to read (and `EXPLAIN ANALYZE`) in plain
   SQL. That property: the optional `source_id`/`repo`/`lang`/`source_type`
-  (and PR `author`/`reviewer`/`involves`/`pr_state`, Jira `issue_type`/`assignee`/
+  (and GitHub `author`/`reviewer`/`involves`/`pr_state`/`issue_state`, Jira `issue_type`/`assignee`/
   `reporter`/`parent`) filters are applied **inside each leg's own `WHERE`** — so the `row_number()`
   window ranks only the already-filtered set. A filter applied after fusion
   could let an out-of-scope chunk consume a rank-1 slot and starve an in-scope
@@ -119,6 +119,7 @@ defmodule RetrievalNode.Search.HybridQuery do
           reporter: String.t() | nil,
           parent: String.t() | nil,
           pr_state: String.t() | nil,
+          issue_state: String.t() | nil,
           top_k: pos_integer(),
           graph: boolean()
         ]
@@ -130,21 +131,26 @@ defmodule RetrievalNode.Search.HybridQuery do
   # query — no entity JOIN text appears in it at all.
   # ---------------------------------------------------------------------
 
-  # Filter predicates ($5–$16), for a bare `chunks` FROM (`q = ""`: the vector
+  # Filter predicates ($5–$17), for a bare `chunks` FROM (`q = ""`: the vector
   # and FTS legs) or the entity leg's joined `chunks c` (`q = "c."`).
   #
-  # GitHub logins are case-insensitive; PR chunks carry `reviewers` as a jsonb
-  # array (`PullRequestSync`), other chunks have none and never match. Jira
+  # GitHub logins are case-insensitive; PR chunks carry `reviewers` and
+  # GitHub issue chunks `assignees` as jsonb arrays (`PullRequestSync`,
+  # `IssueSync`), other chunks have none and never match: `involves` is the
+  # author, a reviewer or an assignee. Jira
   # people are display names, matched as a case-insensitive substring
   # ("pierre" finds "Pierre Clément"); type and parent key are exact. Chunks
   # without the metadata (code, Drive) never match. A PR's `state` is "open"
   # or "merged"; PRs indexed before states existed have none and are merged.
+  # A GitHub issue's is "open" or "closed".
   filters = fn q ->
-    reviewed_by = fn param ->
+    listed_in = fn field, param ->
       "EXISTS (SELECT 1 FROM jsonb_array_elements_text(" <>
-        "CASE jsonb_typeof(#{q}metadata->'reviewers') WHEN 'array' THEN #{q}metadata->'reviewers' END" <>
+        "CASE jsonb_typeof(#{q}metadata->'#{field}') WHEN 'array' THEN #{q}metadata->'#{field}' END" <>
         ") r WHERE lower(r) = lower(#{param}))"
     end
+
+    reviewed_by = &listed_in.("reviewers", &1)
 
     contains = fn field, param ->
       "strpos(lower(#{q}metadata->>'#{field}'), lower(#{param})) > 0"
@@ -158,13 +164,15 @@ defmodule RetrievalNode.Search.HybridQuery do
         AND ($9::text IS NULL OR lower(#{q}metadata->>'author') = lower($9))
         AND ($10::text IS NULL OR #{reviewed_by.("$10")})
         AND ($11::text IS NULL OR lower(#{q}metadata->>'author') = lower($11)
-             OR #{reviewed_by.("$11")})
+             OR #{reviewed_by.("$11")} OR #{listed_in.("assignees", "$11")})
         AND ($12::text IS NULL OR lower(#{q}metadata->>'issue_type') = lower($12))
         AND ($13::text IS NULL OR #{contains.("assignee", "$13")})
         AND ($14::text IS NULL OR #{contains.("reporter", "$14")})
         AND ($15::text IS NULL OR upper(#{q}metadata->>'parent') = upper($15))
         AND ($16::text IS NULL OR (#{q}metadata ? 'pr'
-             AND coalesce(#{q}metadata->>'state', 'merged') = lower($16)))\
+             AND coalesce(#{q}metadata->>'state', 'merged') = lower($16)))
+        AND ($17::text IS NULL OR (#{q}metadata ? 'issue'
+             AND #{q}metadata->>'state' = lower($17)))\
     """
   end
 
@@ -207,7 +215,7 @@ defmodule RetrievalNode.Search.HybridQuery do
   # matches is what made the leg cost hundreds of ms.
   @term_match_cap 200
 
-  # entity_search: each significant query term ($18+) is matched as an ILIKE
+  # entity_search: each significant query term ($19+) is matched as an ILIKE
   # substring of entities.qualified_name (trigram GIN index), then followed
   # through entity_mentions to the linked chunk. Two stages, and the split
   # matters: `entity_matches` pre-selects matching symbols FIRST, scores only
@@ -267,7 +275,7 @@ defmodule RetrievalNode.Search.HybridQuery do
   )\
   """
 
-  # entity_search contributes at weight $17 (config `:graph_leg_weight`)
+  # entity_search contributes at weight $18 (config `:graph_leg_weight`)
   # rather than 1.0 like the tuned vector/FTS pair — see moduledoc.
   @fused_three_leg_sql """
   fused AS (
@@ -277,7 +285,7 @@ defmodule RetrievalNode.Search.HybridQuery do
       UNION ALL
       SELECT id, rank, 1.0::float AS weight FROM fts_search
       UNION ALL
-      SELECT id, rank, $17::float AS weight FROM entity_search
+      SELECT id, rank, $18::float AS weight FROM entity_search
     ) ranked
     GROUP BY id
   )\
@@ -307,13 +315,13 @@ defmodule RetrievalNode.Search.HybridQuery do
   # planner, which then prefers a LIMIT-driven seq scan of the whole entities
   # table. A term matching more than @term_match_cap entities is dropped from
   # the leg (non-discriminating; see the cap's comment). Term i binds at
-  # $(18 + 2i) with its ILIKE pattern at $(19 + 2i), after the filters ($5–$16)
-  # and the leg weight ($17).
+  # $(19 + 2i) with its ILIKE pattern at $(20 + 2i), after the filters ($5–$17)
+  # and the leg weight ($18).
   defp entity_matches_sql(term_count) do
     per_term =
       Enum.map_join(0..(term_count - 1), "\n      UNION ALL\n", fn i ->
-        term = 18 + 2 * i
-        pat = 19 + 2 * i
+        term = 19 + 2 * i
+        pat = 20 + 2 * i
 
         """
         (SELECT #{i} AS term_idx, e.id, word_similarity($#{term}::text, e.qualified_name) AS sim
@@ -363,7 +371,9 @@ defmodule RetrievalNode.Search.HybridQuery do
   one — so they only ever return PR chunks. `:issue_type` (e.g. `"Bug"`),
   `:assignee`/`:reporter` (part of a display name) and `:parent` (the parent
   issue key, e.g. an epic) only ever return Jira chunks. `:pr_state`
-  (`"open"`/`"merged"`) only returns PR chunks in that state. A nil
+  (`"open"`/`"merged"`) only returns PR chunks in that state, `:issue_state`
+  (`"open"`/`"closed"`) GitHub issue chunks. `:involves` also matches a
+  GitHub issue's author or assignees. A nil
   `:embedding` runs a text-only search.
 
   `:graph` (default from config `:graph_leg_default`, currently `false`) adds
@@ -408,7 +418,8 @@ defmodule RetrievalNode.Search.HybridQuery do
       opts[:assignee],
       opts[:reporter],
       opts[:parent],
-      opts[:pr_state]
+      opts[:pr_state],
+      opts[:issue_state]
     ]
 
     plain = fn -> Repo.query!(@sql, base_params) end
@@ -482,7 +493,7 @@ defmodule RetrievalNode.Search.HybridQuery do
   # ILIKE's default escape character.
   defp like_pattern(term), do: "%" <> String.replace(term, ~r/([%_\\])/, "\\\\\\1") <> "%"
 
-  # Normalized to a non-negative float: the SQL binds it as `$17::float`, and a
+  # Normalized to a non-negative float: the SQL binds it as `$18::float`, and a
   # misconfigured (negative/non-numeric) weight must not invert or break fusion.
   defp graph_leg_weight do
     case Application.get_env(:retrieval_node, :graph_leg_weight, 0.5) do

@@ -9,7 +9,7 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.Source
 
@@ -17,6 +17,8 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
     "git" => {:git_repo, RepoSync},
     # Merged PRs, only for git sources with `pull_requests = true`.
     "git_prs" => {:git_repo, PullRequestSync},
+    # Issues, only for git sources with `issues = true`.
+    "git_issues" => {:git_repo, IssueSync},
     "jira" => {:jira_project, JiraSync},
     "drive" => {:drive_folder, DriveSync}
   }
@@ -45,6 +47,9 @@ defmodule RetrievalNode.Ingest.Workers.SyncScheduler do
 
   defp only_opted_in(query, "git_prs"),
     do: where(query, [s], fragment("(?->>'pull_requests')::boolean IS TRUE", s.config))
+
+  defp only_opted_in(query, "git_issues"),
+    do: where(query, [s], fragment("(?->>'issues')::boolean IS TRUE", s.config))
 
   defp only_opted_in(query, _kind), do: query
 end

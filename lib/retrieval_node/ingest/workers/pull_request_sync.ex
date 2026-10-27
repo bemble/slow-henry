@@ -30,10 +30,10 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   the GitHub search is sorted by update, oldest first, so a PR edited or
   commented later is picked up again and re-staged (unchanged content is
   skipped by the owner); `SourcesFile` clears it when open PRs are turned
-  on (or bot ones), since those not updated since it would be missed. At most
-  `@max_per_run` PRs are staged per run; a larger backlog snoozes and
-  continues from the watermark, so a big repo never holds the job. Like the other
-  sync workers it only stages rows; `SourceOwner` applies them.
+  on (or bot ones), since those not updated since it would be missed. A
+  large backlog is staged over several runs, and like the other sync
+  workers this one only stages rows (`GitHubDocs`, shared with
+  `IssueSync`).
 
   With `max_age` set (`Ingest.MaxAge`), only the PRs merged — or, for open
   ones, last updated — after its cutoff are kept: the search starts at the
@@ -58,25 +58,22 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
       states: [:available, :scheduled, :executing, :retryable, :suspended]
     ]
 
-  import Ecto.Query
-
-  alias RetrievalNode.Ingest.{GitHub, MaxAge, PendingChunks, SourceOwner}
+  alias RetrievalNode.Ingest.{GitHub, GitHubDocs, MaxAge}
   alias RetrievalNode.Repo
-  alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
+  alias RetrievalNode.Retrieval.Source
 
-  @max_per_run 300
-  @continue_in_s 5
-  @epoch "1970-01-01T00:00:00Z"
+  @kind "pr"
+  @watermark "prs_updated_since"
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"source_id" => source_id}}) do
     source = Repo.get!(Source, source_id)
     config = source.config || %{}
 
-    with :ok <- syncable(source) do
+    with {:ok, repo} <- GitHubDocs.repo(source) do
       if config["pull_requests"] == true,
-        do: sync(source, options(config)),
-        else: purge_all(source)
+        do: sync(source, repo, options(config)),
+        else: GitHubDocs.purge_all(source, @kind, @watermark)
     end
   end
 
@@ -90,118 +87,44 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
     }
   end
 
-  defp sync(source, options) do
-    with {:ok, repo} <- github_repo(source) do
-      state = get_or_create_sync_state(source.id)
+  defp sync(source, repo, options) do
+    state = GitHubDocs.sync_state(source.id)
 
-      cond do
-        not options.open -> purge(source, state: "open")
-        not options.bots -> purge(source, state: "open", bot: true)
-        true -> :ok
-      end
-
-      if options.cutoff, do: purge(source, older_than: options.cutoff)
-
-      since =
-        [Map.get(state.cursor || %{}, "prs_updated_since", @epoch), options.cutoff]
-        |> Enum.reject(&is_nil/1)
-        |> Enum.max()
-
-      sync(source, repo, options, state, since, nil, 0)
+    # `open_pull_requests` (`bot_pull_requests`) off: the open PRs (opened
+    # by bots) still indexed go; with `max_age`, those out of the window.
+    cond do
+      not options.open -> GitHubDocs.purge(source, @kind, state: "open")
+      not options.bots -> GitHubDocs.purge(source, @kind, state: "open", bot: true)
+      true -> :ok
     end
+
+    if options.cutoff,
+      do: GitHubDocs.purge(source, @kind, older_than: {options.cutoff, "merged_at"})
+
+    since = GitHubDocs.since(state, @watermark, options.cutoff)
+
+    GitHubDocs.walk(
+      &GitHub.prs_page(repo, since, &1, open: options.open),
+      &stage!(source, &1, &2, options),
+      state
+    )
   end
 
-  # Like the other sync workers: a job queued before the source was
-  # deactivated or denied (or a retry) is a no-op.
-  defp syncable(source),
-    do: if(Source.syncable?(source), do: :ok, else: {:cancel, :ineligible})
-
-  defp github_repo(source) do
-    case GitHub.repo_from_url(source.identifier) do
-      {:ok, repo} -> {:ok, repo}
-      # Not on GitHub: nothing to do, and retrying wouldn't change that.
-      :error -> {:cancel, :not_a_github_repo}
-    end
-  end
-
-  defp sync(source, repo, options, state, since, cursor, done) do
-    case GitHub.prs_page(repo, since, cursor, open: options.open) do
-      {:ok, prs, next} ->
-        state = stage!(source, state, prs, options)
-        done = done + length(prs)
-
-        cond do
-          next == nil ->
-            mark_synced!(state)
-            :ok
-
-          done >= @max_per_run ->
-            {:snooze, @continue_in_s}
-
-          true ->
-            sync(source, repo, options, state, since, next, done)
-        end
-
-      # Not connected: nothing a retry fixes; the next hourly run tries again.
-      {:error, :github_not_authorized} ->
-        {:cancel, :github_not_authorized}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  # Stage one page and move the watermark to its newest update, in one
-  # transaction, so a crash never skips PRs.
   defp stage!(_source, state, [], _options), do: state
 
   defp stage!(source, state, prs, options) do
     newest = prs |> Enum.map(& &1.updated_at) |> Enum.max()
-
-    {:ok, state} =
-      Repo.transaction(
-        fn ->
-          rows = rows(source, prs, options)
-          if rows != [], do: {:ok, _ids} = PendingChunks.insert_raw_all(rows)
-
-          # RepoSync shares this sync_states row (last_sha) and can run at the
-          # same time: touch only our key instead of rewriting the cursor.
-          {1, [state]} =
-            Repo.update_all(
-              from(s in SyncState,
-                where: s.id == ^state.id,
-                select: s,
-                update: [
-                  set: [
-                    cursor:
-                      fragment(
-                        "jsonb_set(coalesce(?, '{}'::jsonb), '{prs_updated_since}', to_jsonb(?::text))",
-                        s.cursor,
-                        ^newest
-                      )
-                  ]
-                ]
-              ),
-              []
-            )
-
-          state
-        end,
-        timeout: PendingChunks.insert_timeout()
-      )
-
-    SourceOwner.notify(source.id)
-    state
+    GitHubDocs.stage!(source, state, rows(source, prs, options), @watermark, newest)
   end
 
   # Closed-without-merge PRs are only deleted when they are indexed (or
   # staged): most were never open while the option was on.
   defp rows(source, prs, options) do
     {closed, kept} = Enum.split_with(prs, &(&1.state == :closed))
-    indexed = indexed_paths(source, Enum.map(closed, &path/1))
+    indexed = GitHubDocs.indexed_paths(source, Enum.map(closed, &path/1))
 
     deletions =
-      for pr <- closed, path(pr) in indexed, do: deletion_row(source, path(pr))
+      for pr <- closed, path(pr) in indexed, do: GitHubDocs.deletion_row(source, path(pr))
 
     contents =
       for pr <- kept,
@@ -221,166 +144,31 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   defp path(pr), do: "pulls/#{pr.number}"
 
   defp row(source, pr) do
-    path = path(pr)
     people = %{"author" => pr.author, "reviewers" => pr.reviewers}
     open = if pr.state == :open, do: " [open]", else: ""
     # An open PR ages by its activity (`max_age`), so its update date is
     # kept current.
     updated_at = if pr.state == :open, do: pr.updated_at
 
-    %{
-      source: "git",
-      source_id: source.id,
-      source_type: "git_repo",
-      repo: Source.mirror_slug(source),
-      lang: "markdown",
-      natural_key: "repo:#{source.id}:#{path}",
-      # Covers the people and the state too: an approval with no comment
-      # changes `reviewers` but not the text, and PRs indexed before states
-      # existed get theirs; the owner skips a row whose hash is unchanged.
-      content_hash:
-        :crypto.hash(:sha256, [
-          pr.text,
-          Jason.encode!(people),
-          Atom.to_string(pr.state),
-          updated_at || ""
-        ])
-        |> Base.encode16(case: :lower),
-      raw_content: pr.text,
-      metadata:
-        people
-        |> Map.merge(%{
-          "path" => path,
-          "name" => "PR ##{pr.number}#{open}: #{pr.title}",
-          "pr" => pr.number,
-          "url" => pr.url,
-          "state" => Atom.to_string(pr.state),
-          "merged_at" => pr.merged_at,
-          "updated_at" => updated_at,
-          "draft" => if(pr.draft, do: true),
-          "bot" => if(pr.bot_author, do: true)
-        })
-        |> Map.reject(fn {_key, value} -> is_nil(value) end)
-    }
-  end
-
-  defp deletion_row(source, path) do
-    %{
-      source: "git",
-      source_id: source.id,
-      source_type: "git_repo",
-      repo: Source.mirror_slug(source),
-      natural_key: "repo:#{source.id}:#{path}",
-      metadata: %{"path" => path},
-      status: "deleted"
-    }
-  end
-
-  # --- turning the options off ---
-
-  # `pull_requests` off: every PR document goes, and the watermark with it.
-  defp purge_all(source) do
-    {:ok, _} =
-      Repo.transaction(fn ->
-        stage_deletions!(source, pr_paths(source, []))
-
-        from(s in SyncState,
-          where: s.source_id == ^source.id,
-          update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
-        )
-        |> Repo.update_all([])
-      end)
-
-    SourceOwner.notify(source.id)
-    :ok
-  end
-
-  # `open_pull_requests` (`bot_pull_requests`) off: the open PRs (opened by
-  # bots) still indexed go; with `max_age`, those out of the window.
-  defp purge(source, filters) do
-    case pr_paths(source, filters) do
-      [] ->
-        :ok
-
-      paths ->
-        {:ok, _} = Repo.transaction(fn -> stage_deletions!(source, paths) end)
-        SourceOwner.notify(source.id)
-    end
-  end
-
-  defp stage_deletions!(_source, []), do: :ok
-
-  defp stage_deletions!(source, paths) do
-    {:ok, _ids} = PendingChunks.insert_raw_all(Enum.map(paths, &deletion_row(source, &1)))
-  end
-
-  # The PR paths of `source` that are indexed or staged — only those in
-  # `state:` when given ("open"; merged PRs indexed before states existed
-  # have none), opened by a bot with `bot: true`, and out of the window
-  # with `older_than:` (merged before it, or open and not updated since).
-  # An open PR indexed before it carried `updated_at` counts as out: setting
-  # `max_age` re-reads the PR history, so one still active is staged again,
-  # with its date, after this deletion (rows apply in arrival order).
-  defp pr_paths(source, filters) do
-    pr_paths_query(Chunk, source, filters)
-    |> union(^pr_paths_query(PendingChunk, source, [{:raw, true} | filters]))
-    |> Repo.all()
-  end
-
-  defp pr_paths_query(schema, source, filters) do
-    query =
-      from r in schema,
-        where: r.source_id == ^source.id and fragment("? \\? 'pr'", r.metadata),
-        select: fragment("?->>'path'", r.metadata)
-
-    Enum.reduce(filters, query, fn
-      {:raw, true}, query -> where(query, [r], r.status == "raw")
-      {:state, state}, query -> where(query, [r], fragment("?->>'state'", r.metadata) == ^state)
-      {:bot, true}, query -> where(query, [r], fragment("(?->>'bot')::boolean", r.metadata))
-      {:older_than, cutoff}, query -> where(query, [r], ^older_than(cutoff))
-    end)
-  end
-
-  defp older_than(cutoff) do
-    dynamic(
-      [r],
-      fragment(
-        "CASE WHEN ?->>'state' = 'open' THEN coalesce(?->>'updated_at', '') < ? ELSE ?->>'merged_at' < ? END",
-        r.metadata,
-        r.metadata,
-        ^cutoff,
-        r.metadata,
-        ^cutoff
-      )
+    # The hash covers the people and the state too: an approval with no
+    # comment changes `reviewers` but not the text, and PRs indexed before
+    # states existed get theirs; the owner skips a row whose hash is
+    # unchanged.
+    GitHubDocs.row(
+      source,
+      path(pr),
+      pr.text,
+      [pr.text, Jason.encode!(people), Atom.to_string(pr.state), updated_at || ""],
+      Map.merge(people, %{
+        "name" => "PR ##{pr.number}#{open}: #{pr.title}",
+        "pr" => pr.number,
+        "url" => pr.url,
+        "state" => Atom.to_string(pr.state),
+        "merged_at" => pr.merged_at,
+        "updated_at" => updated_at,
+        "draft" => if(pr.draft, do: true),
+        "bot" => if(pr.bot_author, do: true)
+      })
     )
-  end
-
-  defp indexed_paths(_source, []), do: []
-
-  defp indexed_paths(source, paths) do
-    chunks =
-      from c in Chunk,
-        where: c.source_id == ^source.id and fragment("?->>'path'", c.metadata) in ^paths,
-        select: fragment("?->>'path'", c.metadata)
-
-    staged =
-      from p in PendingChunk,
-        where:
-          p.source_id == ^source.id and p.status == "raw" and
-            fragment("?->>'path'", p.metadata) in ^paths,
-        select: fragment("?->>'path'", p.metadata)
-
-    chunks |> union(^staged) |> Repo.all()
-  end
-
-  defp mark_synced!(state) do
-    state |> SyncState.changeset(%{last_synced_at: DateTime.utc_now()}) |> Repo.update!()
-  end
-
-  defp get_or_create_sync_state(source_id) do
-    case Repo.get_by(SyncState, source_id: source_id) do
-      nil -> Repo.insert!(%SyncState{source_id: source_id, cursor: %{}, status: :idle})
-      state -> state
-    end
   end
 end

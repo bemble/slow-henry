@@ -167,6 +167,30 @@ defmodule RetrievalNode.Ingest.SourcesTest do
       assert id == opted.id
     end
 
+    test "git_issues fans out only to git sources with issues = true" do
+      opted =
+        Repo.insert!(%Source{
+          source_type: :git_repo,
+          name: "with-issues",
+          identifier: "https://github.com/o/a.git",
+          config: %{"issues" => true}
+        })
+
+      Repo.insert!(%Source{
+        source_type: :git_repo,
+        name: "prs-only",
+        identifier: "https://github.com/o/b.git",
+        config: %{"pull_requests" => true}
+      })
+
+      assert :ok = perform_job(SyncScheduler, %{"kind" => "git_issues"})
+
+      assert [%{args: %{"source_id" => id}}] =
+               all_enqueued(worker: RetrievalNode.Ingest.Workers.IssueSync)
+
+      assert id == opted.id
+    end
+
     test "fans out one sync job per active, allow-policy source of the kind" do
       git = Repo.insert!(%Source{source_type: :git_repo, name: "g", identifier: "file:///g"})
 

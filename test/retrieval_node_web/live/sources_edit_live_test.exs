@@ -313,6 +313,23 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
              saved!(path)
   end
 
+  test "Issues is saved", %{conn: conn, path: path} do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    render_async(view)
+    adr = key(view, "adr")
+
+    view
+    |> form("#github-repos-form", %{
+      "repos" => %{adr => %{"name" => "adr", "active" => "true", "issues" => "true"}}
+    })
+    |> render_change()
+
+    view |> element("#review-button") |> render_click()
+    view |> element("#save-button") |> render_click()
+
+    assert [%{name: "adr", config: %{"issues" => true}} | _] = saved!(path)
+  end
+
   test "Jira: adds a project by key and saves it", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)

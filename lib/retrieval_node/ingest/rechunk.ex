@@ -1,7 +1,7 @@
 defmodule RetrievalNode.Ingest.Rechunk do
   @moduledoc """
-  Re-chunks everything that isn't tree-sitter code — merged PRs, Drive docs,
-  Jira issues, and the repo files without a tree-sitter grammar — after a
+  Re-chunks everything that isn't tree-sitter code — PRs, GitHub issues,
+  Drive docs, Jira issues, and the repo files without a tree-sitter grammar — after a
   chunker change, by re-staging it from its origin.
 
   The raw files are unchanged, so `FileIngest` would skip them on their
@@ -9,12 +9,12 @@ defmodule RetrievalNode.Ingest.Rechunk do
 
     * drops `modified_time` from Drive chunks, so a full pass re-exports
       every doc instead of only the newer ones;
-    * drops the PR watermark (`prs_updated_since`), so PR sync re-reads every
-      merged PR;
+    * drops the PR and issue watermarks (`prs_updated_since`,
+      `issues_updated_since`), so their syncs re-read everything;
     * enqueues a full `RepoSync` (`"full" => true`: every file re-staged with
       `force`), `DriveSync` and `JiraSync` (`"mode" => "full"`) per syncable
-      source, and a `PullRequestSync` per git source with
-      `pull_requests = true`.
+      source, and a `PullRequestSync` (`IssueSync`) per git source with
+      `pull_requests = true` (`issues = true`).
 
   Code files re-staged by the full repo pass still skip on their hash, and an
   unchanged chunk keeps its embedding (`FileIngest`'s reuse), so the cost is
@@ -30,7 +30,7 @@ defmodule RetrievalNode.Ingest.Rechunk do
   import Ecto.Query
 
   alias RetrievalNode.Chunking.TreeSitterImpl
-  alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
+  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, Source, SyncState}
 
@@ -70,8 +70,12 @@ defmodule RetrievalNode.Ingest.Rechunk do
         |> Repo.update_all([], timeout: :infinity)
 
         from(s in SyncState,
-          where: fragment("? \\? 'prs_updated_since'", s.cursor),
-          update: [set: [cursor: fragment("? - 'prs_updated_since'", s.cursor)]]
+          where: fragment("? \\?| array['prs_updated_since', 'issues_updated_since']", s.cursor),
+          update: [
+            set: [
+              cursor: fragment("? - array['prs_updated_since', 'issues_updated_since']", s.cursor)
+            ]
+          ]
         )
         |> Repo.update_all([])
 
@@ -118,10 +122,17 @@ defmodule RetrievalNode.Ingest.Rechunk do
 
   @full %{"mode" => "full"}
 
-  defp workers(%Source{source_type: :git_repo, config: %{"pull_requests" => true}}),
-    do: [{RepoSync, %{"full" => true}}, {PullRequestSync, %{}}]
+  defp workers(%Source{source_type: :git_repo, config: config}) do
+    config = config || %{}
 
-  defp workers(%Source{source_type: :git_repo}), do: [{RepoSync, %{"full" => true}}]
+    [
+      {RepoSync, %{"full" => true}},
+      config["pull_requests"] == true && {PullRequestSync, %{}},
+      config["issues"] == true && {IssueSync, %{}}
+    ]
+    |> Enum.filter(& &1)
+  end
+
   defp workers(%Source{source_type: :drive_folder}), do: [{DriveSync, @full}]
   defp workers(%Source{source_type: :jira_project}), do: [{JiraSync, @full}]
 end

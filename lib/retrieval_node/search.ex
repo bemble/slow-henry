@@ -29,9 +29,11 @@ defmodule RetrievalNode.Search do
     * `:source_id` / `:source_type` / `:repo` / `:lang` — optional filters applied
       inside both ranking CTEs (see `HybridQuery`). `:source_type` is the DB enum
       string (`"git_repo"`/`"jira_project"`/`"drive_folder"`)
-    * `:author` / `:reviewer` / `:involves` — a GitHub login: PRs it authored,
-      reviewed, or either
+    * `:author` / `:reviewer` / `:involves` — a GitHub login: PRs or issues
+      it authored, PRs it reviewed, or any of these and the issues assigned
+      to it
     * `:pr_state` — `"open"` or `"merged"`: PRs in that state
+    * `:issue_state` — `"open"` or `"closed"`: GitHub issues in that state
     * `:issue_type` / `:assignee` / `:reporter` / `:parent` — Jira issues of that
       type (e.g. `"Bug"`), whose assignee or reporter display name contains
       the text, or under that parent key (an epic)
@@ -109,6 +111,7 @@ defmodule RetrievalNode.Search do
         :reporter,
         :parent,
         :pr_state,
+        :issue_state,
         :graph
       ])
       |> Keyword.merge(embedding: embedding, text_query: query_text, top_k: query_top_k)

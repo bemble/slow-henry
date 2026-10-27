@@ -230,6 +230,33 @@ defmodule RetrievalNode.MCP.ToolsTest do
       assert length(paths.(%{})) == 4
     end
 
+    test "issue_state narrows to GitHub issues; involves matches their assignees" do
+      source =
+        Repo.insert!(%Source{source_type: :git_repo, name: "acme/app", identifier: "file:///a"})
+
+      doc = fn path, metadata ->
+        insert_chunk(source, :git_repo, "quuxbug report #{path}",
+          metadata: Map.put(metadata, "path", path)
+        )
+      end
+
+      doc.("issues/1", %{"issue" => 1, "state" => "open", "author" => "alice"})
+      doc.("issues/2", %{"issue" => 2, "state" => "closed", "assignees" => ["Bob"]})
+      doc.("pulls/3", %{"pr" => 3, "state" => "open", "reviewers" => ["bob"]})
+      doc.("lib/a.ex", %{})
+
+      paths = fn params ->
+        %{"results" => results} = ok(SemanticSearch, Map.put(params, :query, "quuxbug"))
+        results |> Enum.map(& &1["metadata"]["path"]) |> Enum.sort()
+      end
+
+      assert paths.(%{issue_state: "open"}) == ["issues/1"]
+      assert paths.(%{issue_state: "Closed"}) == ["issues/2"]
+      assert paths.(%{pr_state: "open"}) == ["pulls/3"]
+      assert paths.(%{involves: "bob"}) == ["issues/2", "pulls/3"]
+      assert paths.(%{author: "alice"}) == ["issues/1"]
+    end
+
     test "issue_type / assignee / reporter / parent narrow Jira issues" do
       source = Repo.insert!(%Source{source_type: :jira_project, name: "Jira: P", identifier: "P"})
 
