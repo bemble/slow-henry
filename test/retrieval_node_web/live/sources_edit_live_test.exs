@@ -215,6 +215,71 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
     refute Repo.get_by!(Source, name: "local").active
   end
 
+  test "Open PRs is disabled until Merged PRs is on, bot PRs until Open PRs, then saved", %{
+    conn: conn,
+    path: path
+  } do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    render_async(view)
+    adr = key(view, "adr")
+
+    assert has_element?(view, "##{adr}-open-prs[disabled]")
+    assert has_element?(view, "##{adr}-bot-prs[disabled]")
+
+    view
+    |> form("#github-repos-form", %{
+      "repos" => %{adr => %{"name" => "adr", "active" => "true", "pull_requests" => "true"}}
+    })
+    |> render_change()
+
+    refute has_element?(view, "##{adr}-open-prs[disabled]")
+    assert has_element?(view, "##{adr}-bot-prs[disabled]")
+
+    view
+    |> form("#github-repos-form", %{
+      "repos" => %{
+        adr => %{
+          "name" => "adr",
+          "active" => "true",
+          "pull_requests" => "true",
+          "open_pull_requests" => "true"
+        }
+      }
+    })
+    |> render_change()
+
+    view
+    |> form("#github-repos-form", %{
+      "repos" => %{
+        adr => %{
+          "name" => "adr",
+          "active" => "true",
+          "pull_requests" => "true",
+          "open_pull_requests" => "true",
+          "bot_pull_requests" => "true"
+        }
+      }
+    })
+    |> render_change()
+
+    refute has_element?(view, "##{adr}-bot-prs[disabled]")
+
+    view |> element("#review-button") |> render_click()
+    view |> element("#save-button") |> render_click()
+
+    assert [
+             %{
+               name: "adr",
+               config: %{
+                 "pull_requests" => true,
+                 "open_pull_requests" => true,
+                 "bot_pull_requests" => true
+               }
+             }
+             | _
+           ] = saved!(path)
+  end
+
   test "Jira: adds a project by key and saves it", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)

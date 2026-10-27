@@ -120,6 +120,10 @@ defmodule RetrievalNodeWeb.SourceLive do
     assigns =
       assign(assigns,
         prs: config["pull_requests"] == true,
+        open_prs: config["pull_requests"] == true and config["open_pull_requests"] == true,
+        bot_prs:
+          config["pull_requests"] == true and config["open_pull_requests"] == true and
+            config["bot_pull_requests"] == true,
         exclude: config["exclude"] || []
       )
 
@@ -127,9 +131,19 @@ defmodule RetrievalNodeWeb.SourceLive do
     <span
       :if={@prs}
       class={["badge badge-info badge-sm", @class]}
-      title="Merged pull requests are indexed, as pulls/N"
+      title={
+        cond do
+          @bot_prs -> "Merged and open pull requests, bot ones included, are indexed, as pulls/N"
+          @open_prs -> "Merged and open pull requests are indexed, as pulls/N"
+          true -> "Merged pull requests are indexed, as pulls/N"
+        end
+      }
     >
-      PR
+      {cond do
+        @bot_prs -> "PR + open + bots"
+        @open_prs -> "PR + open"
+        true -> "PR"
+      end}
     </span>
     <span
       :if={@exclude != []}

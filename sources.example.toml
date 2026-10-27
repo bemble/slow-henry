@@ -26,6 +26,8 @@ name = "core"
 url = "https://github.com/home-assistant/core.git"
 exclude = ["homeassistant/components/*", "!homeassistant/components/cloud"]
 pull_requests = true   # merged PRs: description, comments, reviews (default false)
+# open_pull_requests = true   # open PRs too, drafts included (default false)
+# bot_pull_requests = true    # and the open ones bots opened: dependabot… (default false)
 
 # Jira: the resolved issues (status category Done) of a project, by its key:
 # summary, description, type and status, plus the fields turned on below.

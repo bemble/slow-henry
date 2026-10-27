@@ -1,12 +1,11 @@
 defmodule RetrievalNode.Ingest.GitHub do
   @moduledoc """
-  Merged pull requests of a GitHub repo, through GitHub's GraphQL API with
-  the GitHub App user token (`GitHub.OAuth`, connected from the Settings
-  page).
+  Pull requests of a GitHub repo — merged ones, and open ones on request —
+  through GitHub's GraphQL API with the GitHub App user token
+  (`GitHub.OAuth`, connected from the Settings page).
 
-  `merged_prs_page/3` walks a search sorted by `updated` ascending, so a
-  caller can store the last `updatedAt` it saw as its watermark and resume
-  from there. `list_repos/0` feeds the Sources editor's repo picker. Req
+  `prs_page/4` walks a search sorted by `updated` ascending, so a caller can
+  store the last `updatedAt` it saw as its watermark and resume from there. `list_repos/0` feeds the Sources editor's repo picker. Req
   options are extended by `:github_req_options` (tests point them at a
   `Req.Test` plug).
   """
@@ -25,7 +24,7 @@ defmodule RetrievalNode.Ingest.GitHub do
       pageInfo { hasNextPage endCursor }
       nodes {
         ... on PullRequest {
-          number title body url mergedAt updatedAt
+          number title body url state isDraft mergedAt updatedAt
           author { login __typename }
           comments(first: 100) { nodes { body author { login __typename } } }
           reviews(first: 50) { nodes { body state author { login __typename } } }
@@ -46,9 +45,12 @@ defmodule RetrievalNode.Ingest.GitHub do
           number: pos_integer(),
           title: String.t(),
           url: String.t(),
-          merged_at: String.t(),
+          state: :open | :merged | :closed,
+          draft: boolean(),
+          merged_at: String.t() | nil,
           updated_at: String.t(),
           author: String.t(),
+          bot_author: boolean(),
           reviewers: [String.t()],
           text: String.t()
         }
@@ -65,12 +67,15 @@ defmodule RetrievalNode.Ingest.GitHub do
   end
 
   @doc """
-  One page (up to 50) of merged PRs of `repo` updated at or after `since`
-  (ISO 8601), oldest update first. Returns `{:ok, prs, next_cursor | nil}`.
+  One page (up to 50) of the PRs of `repo` updated at or after `since`
+  (ISO 8601), oldest update first: merged ones only, or — with `open: true`
+  — every state (open, merged, and closed without merge, which the caller
+  needs to drop a PR it indexed while open). Returns
+  `{:ok, prs, next_cursor | nil}`.
   """
-  def merged_prs_page(repo, since, cursor \\ nil) do
+  def prs_page(repo, since, cursor \\ nil, opts \\ []) do
     [owner, name] = String.split(repo, "/", parts: 2)
-    search = "repo:#{repo} is:pr is:merged updated:>=#{since} sort:updated-asc"
+    search = search_query(repo, since, Keyword.get(opts, :open, false))
     vars = %{"q" => search, "owner" => owner, "name" => name}
     vars = if cursor, do: Map.put(vars, "after", cursor), else: vars
 
@@ -91,6 +96,11 @@ defmodule RetrievalNode.Ingest.GitHub do
       other ->
         other
     end
+  end
+
+  defp search_query(repo, since, open?) do
+    state = if open?, do: "", else: " is:merged"
+    "repo:#{repo} is:pr#{state} updated:>=#{since} sort:updated-asc"
   end
 
   @doc """
@@ -142,13 +152,24 @@ defmodule RetrievalNode.Ingest.GitHub do
       number: node["number"],
       title: node["title"],
       url: node["url"],
+      state: state(node),
+      draft: node["isDraft"] == true,
       merged_at: node["mergedAt"],
       updated_at: node["updatedAt"],
       author: login(node["author"]),
+      bot_author: bot?(node["author"]),
       reviewers: reviewers(node),
       text: render(repo, node)
     }
   end
+
+  # Older payloads (and the merged-only search) may lack `state`: a merge
+  # date says enough.
+  defp state(%{"state" => "OPEN"}), do: :open
+  defp state(%{"state" => "CLOSED"}), do: :closed
+  defp state(%{"state" => "MERGED"}), do: :merged
+  defp state(%{"mergedAt" => merged_at}) when is_binary(merged_at), do: :merged
+  defp state(_node), do: :closed
 
   # Everyone who submitted a review — an approval with no comment counts —
   # except bots, AI reviewers, deleted accounts and the author's own replies.
@@ -169,7 +190,7 @@ defmodule RetrievalNode.Ingest.GitHub do
     header = [
       "# #{node["title"]}",
       "",
-      "Pull request ##{node["number"]} in #{repo} by @#{login(node["author"])}, merged #{date(node["mergedAt"])}",
+      "Pull request ##{node["number"]} in #{repo} by @#{login(node["author"])}, #{status(node)}",
       node["url"]
     ]
 
@@ -186,6 +207,14 @@ defmodule RetrievalNode.Ingest.GitHub do
       |> Enum.reject(&is_nil/1)
 
     Enum.join([Enum.join(header, "\n") | sections], "\n\n") <> "\n"
+  end
+
+  defp status(node) do
+    case state(node) do
+      :merged -> "merged #{date(node["mergedAt"])}"
+      :open -> if node["isDraft"] == true, do: "open (draft)", else: "open"
+      :closed -> "closed"
+    end
   end
 
   defp nodes(node, key) do
