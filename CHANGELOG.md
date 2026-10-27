@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/bemble/slow-henry/compare/v0.6.0...v0.7.0) (2026-10-27)
+
+
+### Features
+
+* index open pull requests (open_pull_requests, bot_pull_requests) ([#43](https://github.com/bemble/slow-henry/issues/43)) ([de00109](https://github.com/bemble/slow-henry/commit/de00109a10e8583c4cf074007a9567fb25fd1489))
+* markdown chunking for everything that isn't code ([#39](https://github.com/bemble/slow-henry/issues/39)) ([241023e](https://github.com/bemble/slow-henry/commit/241023e518453e6c5000c5da4d338f67f0e6f3c4))
+* max_age for a repo's non-code data (PRs for now) ([#44](https://github.com/bemble/slow-henry/issues/44)) ([0d6ad87](https://github.com/bemble/slow-henry/commit/0d6ad8729f5ad2539c54db4ba7ac345079753153))
+
+
+### Bug Fixes
+
+* **deps:** bump bandit to 1.14.0 ([#41](https://github.com/bemble/slow-henry/issues/41)) ([942b971](https://github.com/bemble/slow-henry/commit/942b971e1232e56919cf05d8a9e09b3abc124d51))
+
 ## [0.6.0](https://github.com/bemble/slow-henry/compare/v0.5.0...v0.6.0) (2026-10-24)
 
 
