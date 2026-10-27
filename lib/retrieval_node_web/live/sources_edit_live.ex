@@ -89,6 +89,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       pull_requests: entry.config["pull_requests"] == true,
       open_pull_requests: entry.config["open_pull_requests"] == true,
       bot_pull_requests: entry.config["bot_pull_requests"] == true,
+      max_age: entry.config["max_age"] || "",
       exclude: entry.config["exclude"] || []
     }
   end
@@ -352,6 +353,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
         # Disabled (so not sent) while PRs (open PRs) are off.
         open_pull_requests: params["open_pull_requests"] == "true",
         bot_pull_requests: params["bot_pull_requests"] == "true",
+        max_age: params["max_age"] || row.max_age,
         exclude: params["exclude"] || []
     }
   end
@@ -445,6 +447,7 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
       pull_requests: false,
       open_pull_requests: false,
       bot_pull_requests: false,
+      max_age: "",
       exclude: []
     }
   end
@@ -477,8 +480,10 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
           "pull_requests" => r.pull_requests,
           "open_pull_requests" => r.pull_requests and r.open_pull_requests,
           "bot_pull_requests" => r.pull_requests and r.open_pull_requests and r.bot_pull_requests,
+          "max_age" => r.max_age |> String.trim() |> blank_to_nil(),
           "exclude" => non_blank(r.exclude)
         }
+        |> Map.reject(fn {_key, value} -> is_nil(value) end)
       end
 
     doc = %{
@@ -515,6 +520,9 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
   end
 
   defp non_blank(values), do: values |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   defp matches({:ok, repos}, query) do
     query = query |> String.trim() |> String.downcase()
@@ -923,6 +931,15 @@ defmodule RetrievalNodeWeb.SourcesEditLive do
             value={@row.pull_requests and @row.open_pull_requests and @row.bot_pull_requests}
             disabled={not (@row.pull_requests and @row.open_pull_requests)}
             label="Open bot PRs"
+          />
+        </div>
+        <div class="w-28" title="Drop PRs older than this (merged, or last updated when open): 90d, 6m, 2y…">
+          <.input
+            id={"#{@row.key}-max-age"}
+            name={"repos[#{@row.key}][max_age]"}
+            value={@row.max_age}
+            label="Max age"
+            placeholder="e.g. 2y"
           />
         </div>
         <button

@@ -431,6 +431,109 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
     end
   end
 
+  describe "max_age" do
+    setup %{source: source} do
+      source =
+        source
+        |> Source.update_changeset(%{
+          config: %{"pull_requests" => true, "open_pull_requests" => true, "max_age" => "30d"}
+        })
+        |> Repo.update!()
+
+      %{source: source, cutoff: days_ago(30, "T00:00:00Z")}
+    end
+
+    defp days_ago(days, time \\ "T12:00:00Z"),
+      do: Date.to_iso8601(Date.add(Date.utc_today(), -days)) <> time
+
+    test "the search starts at the cutoff when the watermark is older", %{
+      source: source,
+      cutoff: cutoff
+    } do
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"prs_updated_since" => "2020-01-01T00:00:00Z"},
+        status: :idle
+      })
+
+      runner(%{nil => {[], nil}})
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert_received {:search, %{"q" => q}}
+      assert q =~ "updated:>=#{cutoff} "
+    end
+
+    test "a newer watermark is kept", %{source: source} do
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"prs_updated_since" => days_ago(2)},
+        status: :idle
+      })
+
+      runner(%{nil => {[], nil}})
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert_received {:search, %{"q" => q}}
+      assert q =~ "updated:>=#{days_ago(2)} "
+    end
+
+    test "a PR merged before the cutoff but commented since is skipped; open PRs carry updated_at",
+         %{source: source} do
+      runner(%{
+        nil =>
+          {[
+             node(1, days_ago(1), %{"mergedAt" => days_ago(400)}),
+             node(2, days_ago(1), %{"mergedAt" => days_ago(10)}),
+             open_node(3, days_ago(1))
+           ], nil}
+      })
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert [merged, open] = staged_rows(source)
+      assert %{"pr" => 2} = merged.metadata
+      refute Map.has_key?(merged.metadata, "updated_at")
+      assert %{"pr" => 3, "updated_at" => updated_at} = open.metadata
+      assert updated_at == days_ago(1)
+    end
+
+    test "an open PR's update re-stages it with a new hash", %{source: source} do
+      runner(%{nil => {[open_node(3, days_ago(2))], nil}})
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      runner(%{nil => {[open_node(3, days_ago(1))], nil}})
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert [first, second] =
+               Repo.all(
+                 from p in PendingChunk,
+                   where: p.source_id == ^source.id,
+                   order_by: p.id,
+                   select: p.content_hash
+               )
+
+      assert first != second
+    end
+
+    test "the indexed PRs that left the window are deleted", %{source: source} do
+      indexed!(source, "pulls/1", %{"state" => "merged", "merged_at" => days_ago(400)})
+      indexed!(source, "pulls/2", %{"merged_at" => days_ago(400)})
+      indexed!(source, "pulls/3", %{"state" => "merged", "merged_at" => days_ago(10)})
+      indexed!(source, "pulls/4", %{"state" => "open", "updated_at" => days_ago(40)})
+      indexed!(source, "pulls/5", %{"state" => "open", "updated_at" => days_ago(10)})
+      # Indexed before open PRs carried updated_at: out (re-staged if active).
+      indexed!(source, "pulls/6", %{"state" => "open"})
+      indexed!(source, "README.md")
+      runner(%{nil => {[], nil}})
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert [
+               %{path: "pulls/1", status: "deleted"},
+               %{path: "pulls/2", status: "deleted"},
+               %{path: "pulls/4", status: "deleted"},
+               %{path: "pulls/6", status: "deleted"}
+             ] = staged_rows(source)
+    end
+  end
+
   test "repo_from_url understands github https and ssh URLs" do
     assert {:ok, "acme/app"} = GitHub.repo_from_url("https://github.com/acme/app.git")
     assert {:ok, "acme/app"} = GitHub.repo_from_url("https://github.com/acme/app")

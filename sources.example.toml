@@ -18,7 +18,7 @@ name = "old-repo"
 url = "https://github.com/my-org/old-repo.git"
 active = false
 
-# A big repo, keeping only part of it, plus the messages of its merged PRs.
+# A big repo, keeping only part of it, plus its merged PRs of the last 2 years.
 # `exclude` is .gitignore-style: `*` stays in one segment, `**` crosses them,
 # a directory covers its whole tree, `!` re-includes, the last match wins.
 [[git]]
@@ -28,6 +28,7 @@ exclude = ["homeassistant/components/*", "!homeassistant/components/cloud"]
 pull_requests = true   # merged PRs: description, comments, reviews (default false)
 # open_pull_requests = true   # open PRs too, drafts included (default false)
 # bot_pull_requests = true    # and the open ones bots opened: dependabot… (default false)
+max_age = "2y"                # keep only the PRs merged (open: updated) in the last 2 years
 
 # Jira: the resolved issues (status category Done) of a project, by its key:
 # summary, description, type and status, plus the fields turned on below.

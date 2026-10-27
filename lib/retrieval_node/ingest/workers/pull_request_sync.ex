@@ -35,6 +35,13 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   continues from the watermark, so a big repo never holds the job. Like the other
   sync workers it only stages rows; `SourceOwner` applies them.
 
+  With `max_age` set (`Ingest.MaxAge`), only the PRs merged — or, for open
+  ones, last updated — after its cutoff are kept: the search starts at the
+  cutoff when the watermark is older, a merged PR found there but merged
+  before it (an old PR commented lately) is skipped, and each run stages the
+  deletion of the indexed PRs that left the window. Open PRs carry their
+  `updated_at` (metadata and hash) for that.
+
   Turning the options off is handled here too, from the source's config when
   the job runs: with `pull_requests` off, every PR document of the source is
   staged for deletion and the watermark cleared (so turning it back on
@@ -53,7 +60,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.{GitHub, PendingChunks, SourceOwner}
+  alias RetrievalNode.Ingest.{GitHub, MaxAge, PendingChunks, SourceOwner}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, PendingChunk, Source, SyncState}
 
@@ -75,7 +82,12 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   defp options(config) do
     open? = config["open_pull_requests"] == true
-    %{open: open?, bots: open? and config["bot_pull_requests"] == true}
+
+    %{
+      open: open?,
+      bots: open? and config["bot_pull_requests"] == true,
+      cutoff: MaxAge.cutoff(config)
+    }
   end
 
   defp sync(source, options) do
@@ -83,12 +95,18 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
       state = get_or_create_sync_state(source.id)
 
       cond do
-        not options.open -> purge_open(source, state: "open")
-        not options.bots -> purge_open(source, state: "open", bot: true)
+        not options.open -> purge(source, state: "open")
+        not options.bots -> purge(source, state: "open", bot: true)
         true -> :ok
       end
 
-      since = Map.get(state.cursor || %{}, "prs_updated_since", @epoch)
+      if options.cutoff, do: purge(source, older_than: options.cutoff)
+
+      since =
+        [Map.get(state.cursor || %{}, "prs_updated_since", @epoch), options.cutoff]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.max()
+
       sync(source, repo, options, state, since, nil, 0)
     end
   end
@@ -188,10 +206,17 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
     contents =
       for pr <- kept,
           options.bots or not (pr.state == :open and pr.bot_author),
+          in_window?(pr, options.cutoff),
           do: row(source, pr)
 
     deletions ++ contents
   end
+
+  # The search starts at the cutoff, so only a PR merged before it but
+  # updated after it (commented lately) can be out of the window.
+  defp in_window?(_pr, nil), do: true
+  defp in_window?(%{state: :merged, merged_at: merged_at}, cutoff), do: merged_at >= cutoff
+  defp in_window?(_pr, _cutoff), do: true
 
   defp path(pr), do: "pulls/#{pr.number}"
 
@@ -199,6 +224,9 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
     path = path(pr)
     people = %{"author" => pr.author, "reviewers" => pr.reviewers}
     open = if pr.state == :open, do: " [open]", else: ""
+    # An open PR ages by its activity (`max_age`), so its update date is
+    # kept current.
+    updated_at = if pr.state == :open, do: pr.updated_at
 
     %{
       source: "git",
@@ -211,7 +239,12 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
       # changes `reviewers` but not the text, and PRs indexed before states
       # existed get theirs; the owner skips a row whose hash is unchanged.
       content_hash:
-        :crypto.hash(:sha256, [pr.text, Jason.encode!(people), Atom.to_string(pr.state)])
+        :crypto.hash(:sha256, [
+          pr.text,
+          Jason.encode!(people),
+          Atom.to_string(pr.state),
+          updated_at || ""
+        ])
         |> Base.encode16(case: :lower),
       raw_content: pr.text,
       metadata:
@@ -223,6 +256,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
           "url" => pr.url,
           "state" => Atom.to_string(pr.state),
           "merged_at" => pr.merged_at,
+          "updated_at" => updated_at,
           "draft" => if(pr.draft, do: true),
           "bot" => if(pr.bot_author, do: true)
         })
@@ -262,8 +296,8 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   end
 
   # `open_pull_requests` (`bot_pull_requests`) off: the open PRs (opened by
-  # bots) still indexed go.
-  defp purge_open(source, filters) do
+  # bots) still indexed go; with `max_age`, those out of the window.
+  defp purge(source, filters) do
     case pr_paths(source, filters) do
       [] ->
         :ok
@@ -282,7 +316,11 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   # The PR paths of `source` that are indexed or staged — only those in
   # `state:` when given ("open"; merged PRs indexed before states existed
-  # have none), and opened by a bot with `bot: true`.
+  # have none), opened by a bot with `bot: true`, and out of the window
+  # with `older_than:` (merged before it, or open and not updated since).
+  # An open PR indexed before it carried `updated_at` counts as out: setting
+  # `max_age` re-reads the PR history, so one still active is staged again,
+  # with its date, after this deletion (rows apply in arrival order).
   defp pr_paths(source, filters) do
     pr_paths_query(Chunk, source, filters)
     |> union(^pr_paths_query(PendingChunk, source, [{:raw, true} | filters]))
@@ -299,7 +337,22 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
       {:raw, true}, query -> where(query, [r], r.status == "raw")
       {:state, state}, query -> where(query, [r], fragment("?->>'state'", r.metadata) == ^state)
       {:bot, true}, query -> where(query, [r], fragment("(?->>'bot')::boolean", r.metadata))
+      {:older_than, cutoff}, query -> where(query, [r], ^older_than(cutoff))
     end)
+  end
+
+  defp older_than(cutoff) do
+    dynamic(
+      [r],
+      fragment(
+        "CASE WHEN ?->>'state' = 'open' THEN coalesce(?->>'updated_at', '') < ? ELSE ?->>'merged_at' < ? END",
+        r.metadata,
+        r.metadata,
+        ^cutoff,
+        r.metadata,
+        ^cutoff
+      )
+    )
   end
 
   defp indexed_paths(_source, []), do: []

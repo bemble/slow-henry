@@ -246,6 +246,7 @@ url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # pull_requests = true                         # also index merged PRs (default false)
 # open_pull_requests = true                    # and open ones, with pull_requests (default false)
 # bot_pull_requests = true                     # and open ones bots opened, with open_pull_requests (default false)
+# max_age = "2y"                               # drop non-code data (PRs) older than this: <n>d, w, m or y
 
 [[jira]]
 project = "CLOUD"                # project key (the source identity)
@@ -263,7 +264,8 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), each with its pull request options (merged, open, open bot PRs),
+URL), each with its pull request options (merged, open, open bot PRs,
+max age),
 Jira projects are added by key with their options, `exclude` patterns
 and Drive ids are plain text fields (a pasted Drive folder URL is turned into
 its id), and a review step shows what will change
@@ -305,6 +307,12 @@ by bots (dependabot, renovate…) are left out unless `bot_pull_requests = true`
 is set too (they're marked `bot` in the metadata). An open PR that gets merged
 is replaced by its merged version; one closed without merge is removed.
 Turning any of these options off removes the PRs it indexed.
+
+`max_age = "2y"` (a number and `d`, `w`, `m` or `y`) limits a repo's
+non-code data — its pull requests, for now — to a rolling window: a merged
+PR is kept while its merge is younger than that, an open one while its last
+activity is. Each PR sync drops what left the window, and changing the
+value re-reads the PR history. The code itself is never limited.
 
 New sources get their first sync right away, then git syncs every 15 minutes,
 Jira hourly and Drive every 30 minutes (plus a full Drive pass daily at 04:15).

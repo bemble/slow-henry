@@ -280,6 +280,39 @@ defmodule RetrievalNodeWeb.SourcesEditLiveTest do
            ] = saved!(path)
   end
 
+  test "Max age is saved, and an invalid one is refused at review", %{conn: conn, path: path} do
+    {:ok, view, _html} = live(conn, ~p"/sources/edit")
+    render_async(view)
+    adr = key(view, "adr")
+
+    change = fn age ->
+      view
+      |> form("#github-repos-form", %{
+        "repos" => %{
+          adr => %{
+            "name" => "adr",
+            "active" => "true",
+            "pull_requests" => "true",
+            "max_age" => age
+          }
+        }
+      })
+      |> render_change()
+    end
+
+    change.("2 years")
+    view |> element("#review-button") |> render_click()
+    assert has_element?(view, "#review-error", "`max_age` must be")
+
+    open_tab(view, "github")
+    change.(" 2y ")
+    view |> element("#review-button") |> render_click()
+    view |> element("#save-button") |> render_click()
+
+    assert [%{name: "adr", config: %{"pull_requests" => true, "max_age" => "2y"}} | _] =
+             saved!(path)
+  end
+
   test "Jira: adds a project by key and saves it", %{conn: conn, path: path} do
     {:ok, view, _html} = live(conn, ~p"/sources/edit")
     render_async(view)
