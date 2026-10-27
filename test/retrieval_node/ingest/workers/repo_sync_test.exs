@@ -549,6 +549,25 @@ defmodule RetrievalNode.Ingest.Workers.RepoSyncTest do
       assert Repo.all(from p in PendingChunk, where: p.status == "deleted") == []
     end
 
+    test "leaves the PR documents alone (virtual paths, not in the tree)", ctx do
+      commit(ctx.src, [{"a.py", "def a(): pass\n"}])
+      sync_and_drain(ctx)
+
+      Repo.insert!(%Chunk{
+        source_id: ctx.source.id,
+        source_type: :git_repo,
+        chunk_key: "k-pulls/1",
+        content_hash: "h",
+        content: "text",
+        context_breadcrumb: "PR #1: Change",
+        metadata: %{"path" => "pulls/1", "pr" => 1}
+      })
+
+      assert :ok = perform_job(RepoSync, %{"source_id" => ctx.source.id, "full" => true})
+
+      assert Repo.all(from p in PendingChunk, where: p.status == "deleted") == []
+    end
+
     test "still applies the generated-file skip rule", ctx do
       commit(ctx.src, [{"a.py", "def a(): pass\n"}, {"mix.lock", "%{}\n"}])
 
