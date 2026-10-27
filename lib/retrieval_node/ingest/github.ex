@@ -1,7 +1,7 @@
 defmodule RetrievalNode.Ingest.GitHub do
   @moduledoc """
   Pull requests of a GitHub repo — merged ones, and open ones on request —
-  and its issues, through GitHub's GraphQL API with the GitHub App user
+  its issues and its releases, through GitHub's GraphQL API with the GitHub App user
   token (`GitHub.OAuth`, connected from the Settings page).
 
   `prs_page/4` and `issues_page/3` walk a search sorted by `updated`
@@ -54,6 +54,24 @@ defmodule RetrievalNode.Ingest.GitHub do
   }
   """
 
+  @release_query """
+  query($owner: String!, $name: String!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      releases(first: 50, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          tagName name description url isDraft isPrerelease publishedAt
+          author { login __typename }
+          tagCommit { oid }
+        }
+      }
+    }
+  }
+  """
+
+  # 50 releases a page.
+  @max_release_pages 20
+
   # AI reviewers/commenters that don't come through as a GitHub App bot
   # (`__typename: "Bot"` or a `[bot]` login), compared lowercased. They are
   # left out of the rendered discussion and of `reviewers`.
@@ -89,6 +107,17 @@ defmodule RetrievalNode.Ingest.GitHub do
           labels: [String.t()],
           linked_prs: [pos_integer()],
           text: String.t()
+        }
+
+  @type release :: %{
+          tag: String.t(),
+          name: String.t() | nil,
+          notes: String.t() | nil,
+          url: String.t(),
+          prerelease: boolean(),
+          published_at: String.t(),
+          author: String.t(),
+          commit: String.t() | nil
         }
 
   @doc "`owner/name` for a github.com clone URL (https or ssh), or :error."
@@ -152,6 +181,57 @@ defmodule RetrievalNode.Ingest.GitHub do
     with {:ok, nodes, next} <- search_page(@issue_query, repo, search, cursor) do
       {:ok, Enum.map(nodes, &to_issue(repo, &1)), next}
     end
+  end
+
+  @doc """
+  The published releases of `repo`, newest first (drafts left out), up to
+  #{@max_release_pages * 50}. `commit` is the sha the tag points to (nil
+  when the tag is gone).
+  """
+  def releases(repo, cursor \\ nil, acc \\ [], pages_left \\ @max_release_pages)
+
+  def releases(_repo, _cursor, acc, 0), do: {:ok, acc}
+
+  def releases(repo, cursor, acc, pages_left) do
+    [owner, name] = String.split(repo, "/", parts: 2)
+    vars = %{"owner" => owner, "name" => name}
+    vars = if cursor, do: Map.put(vars, "after", cursor), else: vars
+
+    case graphql(@release_query, vars) do
+      {:ok, %{"data" => %{"repository" => %{"releases" => page}}}} ->
+        acc = acc ++ for(node <- page["nodes"] || [], published?(node), do: to_release(node))
+
+        if page["pageInfo"]["hasNextPage"],
+          do: releases(repo, page["pageInfo"]["endCursor"], acc, pages_left - 1),
+          else: {:ok, acc}
+
+      {:ok, %{"data" => %{"repository" => nil}}} ->
+        {:error, {:github_repo_not_visible, repo}}
+
+      {:error, :github_not_found} ->
+        {:error, {:github_repo_not_visible, repo}}
+
+      other ->
+        other
+    end
+  end
+
+  defp published?(node), do: node["isDraft"] != true and is_binary(node["publishedAt"])
+
+  @doc false
+  def to_release(node) do
+    %{
+      tag: node["tagName"],
+      name: blank_to_nil(node["name"]),
+      # Release notes come with Windows line endings.
+      notes:
+        node["description"] && blank_to_nil(String.replace(node["description"], "\r\n", "\n")),
+      url: node["url"],
+      prerelease: node["isPrerelease"] == true,
+      published_at: node["publishedAt"],
+      author: login(node["author"]),
+      commit: get_in(node, ["tagCommit", "oid"])
+    }
   end
 
   defp search_query(repo, since, open?) do

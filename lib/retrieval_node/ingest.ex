@@ -356,6 +356,52 @@ defmodule RetrievalNode.Ingest do
     |> Repo.all()
   end
 
+  @release_fields ~w(release name published_at prerelease previous prs url author)
+
+  @doc """
+  The releases indexed for a git repo slug (`ReleaseSync`), newest first:
+  `release` (the tag), `name`, `published_at`, `prerelease`, `previous`,
+  `prs`, `url`, `author` — only those that shipped PR `pr` when given.
+  """
+  @spec releases(String.t(), pos_integer() | nil) ::
+          {:ok, [map()]} | {:error, :repo_not_found}
+  def releases(repo, pr \\ nil) do
+    with {:ok, slug} <- resolve_git_repo(repo) do
+      query =
+        from c in Chunk,
+          join: s in assoc(c, :source),
+          where: s.active == true and s.policy == :allow,
+          where: c.repo == ^slug and fragment("? \\? 'release'", c.metadata),
+          where: fragment("(?->>'chunk_index')::int = 0", c.metadata),
+          order_by: [desc: fragment("?->>'published_at'", c.metadata)],
+          select: c.metadata
+
+      query =
+        if pr,
+          do: where(query, [c], fragment("?->'prs' @> to_jsonb(?::int)", c.metadata, ^pr)),
+          else: query
+
+      {:ok, query |> Repo.all() |> Enum.map(&Map.take(&1, @release_fields))}
+    end
+  end
+
+  @doc "The indexed document of the release `tag` of a git repo slug, as `document/2`."
+  @spec release(String.t(), String.t()) ::
+          {:ok, %{metadata: map(), content: String.t()}} | {:error, :repo_not_found | :not_found}
+  def release(repo, tag) do
+    with {:ok, slug} <- resolve_git_repo(repo) do
+      from(c in Chunk,
+        join: s in assoc(c, :source),
+        where: s.active == true and s.policy == :allow,
+        where: c.repo == ^slug and fragment("?->>'release' = ?", c.metadata, ^tag),
+        order_by: [asc: c.source_id, asc: fragment("(?->>'chunk_index')::int", c.metadata)],
+        select: %{source_id: c.source_id, content: c.content, metadata: c.metadata}
+      )
+      |> Repo.all()
+      |> assemble()
+    end
+  end
+
   defp assemble(chunks) do
     case chunks do
       [] ->

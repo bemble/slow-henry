@@ -305,6 +305,68 @@ defmodule RetrievalNode.Ingest.GitMirror do
   defp entry_statuses({<<"C", _::binary>>, _old_path, new_path}), do: [{:added, new_path}]
   defp entry_statuses({_status, _old_path, new_path}), do: [{:modified, new_path}]
 
+  @doc """
+  The first-parent commits reachable from `to` but not from `from` (nil: the
+  whole history up to `to`), newest first, at most `max`: each one's
+  `subject` and `body`. First parent only, so a merged branch shows as its
+  merge commit, not as the commits it brought in.
+  """
+  @spec log(repo, String.t() | nil, String.t(), pos_integer()) ::
+          {:ok, [%{subject: String.t(), body: String.t()}]} | {:error, reason}
+  def log(slug, from, to, max) do
+    with {:ok, to} <- safe_ref(to),
+         {:ok, range} <- log_range(from, to),
+         {:ok, path} <- mirror_path(slug),
+         {:ok, out} <-
+           git([
+             "--git-dir",
+             path,
+             "log",
+             "--first-parent",
+             "--max-count=#{max}",
+             "--format=%x1e%s%x1f%b",
+             "--end-of-options",
+             range
+           ]) do
+      commits =
+        for record <- String.split(out, "\x1e", trim: true),
+            [subject, body] <- [String.split(record, "\x1f", parts: 2)],
+            do: %{subject: String.trim(subject), body: String.trim(body)}
+
+      {:ok, commits}
+    end
+  end
+
+  defp log_range(nil, to), do: {:ok, to}
+
+  defp log_range(from, to) do
+    with {:ok, from} <- safe_ref(from), do: {:ok, "#{from}..#{to}"}
+  end
+
+  @doc "Whether commit `ancestor` is an ancestor of (or is) commit `descendant`."
+  @spec ancestor?(repo, String.t(), String.t()) :: boolean()
+  def ancestor?(slug, ancestor, descendant) do
+    with {:ok, ancestor} <- safe_ref(ancestor),
+         {:ok, descendant} <- safe_ref(descendant),
+         {:ok, path} <- mirror_path(slug) do
+      # Exit 1 is "no"; anything else (an unknown commit) is not a yes either.
+      git(
+        [
+          "--git-dir",
+          path,
+          "merge-base",
+          "--is-ancestor",
+          "--end-of-options",
+          ancestor,
+          descendant
+        ],
+        [0]
+      ) == {:ok, ""}
+    else
+      _ -> false
+    end
+  end
+
   @doc "Return a file's exact bytes at `ref` (default HEAD). The sole full-content path."
   @spec show(repo, String.t(), String.t()) :: {:ok, String.t()} | {:error, reason}
   def show(slug, path, ref \\ "HEAD") do

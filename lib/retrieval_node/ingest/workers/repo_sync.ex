@@ -89,8 +89,8 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
 
   # Metadata keys of the documents other workers index in a git source
   # under virtual paths (PullRequestSync: `pulls/<n>`, IssueSync:
-  # `issues/<n>`): never in the tree.
-  @virtual_keys ~w(pr issue)
+  # `issues/<n>`, ReleaseSync: `releases/<tag>`): never in the tree.
+  @virtual_keys ~w(pr issue release)
 
   @lang_by_ext %{
     "py" => "python",
@@ -302,7 +302,7 @@ defmodule RetrievalNode.Ingest.Workers.RepoSync do
   # lockfile, oversized) already stage their own deletion in raw_row/5, so the
   # index follows the current rules; unreadable-but-present files stay as-is.
   # Documents other workers add to the source under virtual paths (PRs,
-  # issues: `@virtual_keys`) are never in the tree, and are left to them.
+  # issues, releases: `@virtual_keys`) are never in the tree, and are left to them.
   defp stale_deletion_rows(source, slug, head_entries) do
     at_head = MapSet.new(head_entries, &elem(&1, 1))
 

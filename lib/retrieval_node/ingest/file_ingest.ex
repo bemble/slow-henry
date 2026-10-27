@@ -276,6 +276,7 @@ defmodule RetrievalNode.Ingest.FileIngest do
   # nothing; its name (`PR #<n>: <title>`) does.
   defp file_prefix(%{metadata: %{"pr" => _, "name" => name}}) when is_binary(name), do: name
   defp file_prefix(%{metadata: %{"issue" => _, "name" => name}}) when is_binary(name), do: name
+  defp file_prefix(%{metadata: %{"release" => _, "name" => name}}) when is_binary(name), do: name
 
   defp file_prefix(row) do
     metadata = row.metadata || %{}

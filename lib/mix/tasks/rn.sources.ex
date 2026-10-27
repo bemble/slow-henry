@@ -82,6 +82,7 @@ defmodule Mix.Tasks.Rn.Sources do
         pr_toggle(s.config, e.config, "open_pull_requests", "open PRs"),
         pr_toggle(s.config, e.config, "bot_pull_requests", "open bot PRs"),
         toggle(s.config, e.config, "issues", "issue sync", "issues"),
+        toggle(s.config, e.config, "releases", "release sync", "releases"),
         max_age_change(s.config, e.config),
         (e.active and not s.active) && sync_note(s)
       ]
@@ -110,6 +111,7 @@ defmodule Mix.Tasks.Rn.Sources do
         "open_pull_requests",
         "bot_pull_requests",
         "issues",
+        "releases",
         "max_age",
         "mirror_slug"
       ])
@@ -127,8 +129,8 @@ defmodule Mix.Tasks.Rn.Sources do
   defp max_age_change(old, new) do
     case {(old || %{})["max_age"], new["max_age"]} do
       {same, same} -> false
-      {_, nil} -> "max_age removed, PRs and issues re-read"
-      {_, age} -> "max_age #{age}, PRs and issues re-read"
+      {_, nil} -> "max_age removed, PRs, issues and releases re-read"
+      {_, age} -> "max_age #{age}, PRs, issues and releases re-read"
     end
   end
 

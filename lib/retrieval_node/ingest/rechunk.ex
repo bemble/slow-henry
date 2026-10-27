@@ -1,8 +1,9 @@
 defmodule RetrievalNode.Ingest.Rechunk do
   @moduledoc """
-  Re-chunks everything that isn't tree-sitter code — PRs, GitHub issues,
-  Drive docs, Jira issues, and the repo files without a tree-sitter grammar — after a
-  chunker change, by re-staging it from its origin.
+  Re-chunks everything that isn't tree-sitter code — PRs, GitHub issues and
+  releases, Drive docs, Jira issues, and the repo files without a
+  tree-sitter grammar — after a chunker change, by re-staging it from its
+  origin.
 
   The raw files are unchanged, so `FileIngest` would skip them on their
   `file_hash`; `run/0` clears it on those chunks first, then:
@@ -13,8 +14,10 @@ defmodule RetrievalNode.Ingest.Rechunk do
       `issues_updated_since`), so their syncs re-read everything;
     * enqueues a full `RepoSync` (`"full" => true`: every file re-staged with
       `force`), `DriveSync` and `JiraSync` (`"mode" => "full"`) per syncable
-      source, and a `PullRequestSync` (`IssueSync`) per git source with
-      `pull_requests = true` (`issues = true`).
+      source, and a `PullRequestSync` (`IssueSync`, `ReleaseSync`) per git
+      source with `pull_requests = true` (`issues = true`, `releases =
+      true`) — releases have no watermark: their cleared `file_hash` is
+      what makes `ReleaseSync` stage them again.
 
   Code files re-staged by the full repo pass still skip on their hash, and an
   unchanged chunk keeps its embedding (`FileIngest`'s reuse), so the cost is
@@ -30,7 +33,16 @@ defmodule RetrievalNode.Ingest.Rechunk do
   import Ecto.Query
 
   alias RetrievalNode.Chunking.TreeSitterImpl
-  alias RetrievalNode.Ingest.Workers.{DriveSync, IssueSync, JiraSync, PullRequestSync, RepoSync}
+
+  alias RetrievalNode.Ingest.Workers.{
+    DriveSync,
+    IssueSync,
+    JiraSync,
+    PullRequestSync,
+    ReleaseSync,
+    RepoSync
+  }
+
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Chunk, Source, SyncState}
 
@@ -128,7 +140,8 @@ defmodule RetrievalNode.Ingest.Rechunk do
     [
       {RepoSync, %{"full" => true}},
       config["pull_requests"] == true && {PullRequestSync, %{}},
-      config["issues"] == true && {IssueSync, %{}}
+      config["issues"] == true && {IssueSync, %{}},
+      config["releases"] == true && {ReleaseSync, %{}}
     ]
     |> Enum.filter(& &1)
   end

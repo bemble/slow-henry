@@ -249,6 +249,56 @@ defmodule RetrievalNode.Ingest.GitHubDocs do
     )
   end
 
+  @doc "Stages `rows` (no watermark: for a sync that lists everything each run)."
+  def stage_rows!(_source, []), do: :ok
+
+  def stage_rows!(source, rows) do
+    {:ok, _} =
+      Repo.transaction(fn -> {:ok, _ids} = PendingChunks.insert_raw_all(rows) end,
+        timeout: PendingChunks.insert_timeout()
+      )
+
+    SourceOwner.notify(source.id)
+  end
+
+  @doc """
+  The source's documents under `prefix` (`"releases/"`), as `%{path =>
+  metadata[field]}`: the indexed ones, then the rows staged since applied in
+  order (a staged deletion removes its path). A chunk whose `file_hash` was
+  cleared (`Rechunk`) counts with a nil value, so it is staged again.
+  """
+  def indexed_values(source, prefix, field) do
+    pattern = prefix <> "%"
+
+    chunks =
+      from c in Chunk,
+        where: c.source_id == ^source.id and fragment("?->>'path' LIKE ?", c.metadata, ^pattern),
+        distinct: fragment("?->>'path'", c.metadata),
+        select:
+          {fragment("?->>'path'", c.metadata),
+           fragment(
+             "CASE WHEN ? IS NOT NULL THEN ?->>?::text END",
+             c.file_hash,
+             c.metadata,
+             ^field
+           )}
+
+    staged =
+      from p in PendingChunk,
+        where:
+          p.source_id == ^source.id and p.status in ["raw", "deleted"] and
+            fragment("?->>'path' LIKE ?", p.metadata, ^pattern),
+        order_by: p.id,
+        select:
+          {p.status, fragment("?->>'path'", p.metadata),
+           fragment("?->>?::text", p.metadata, ^field)}
+
+    Enum.reduce(Repo.all(staged), Map.new(Repo.all(chunks)), fn
+      {"raw", path, value}, acc -> Map.put(acc, path, value)
+      {"deleted", path, _value}, acc -> Map.delete(acc, path)
+    end)
+  end
+
   @doc "Which of `paths` are indexed or staged for the source."
   def indexed_paths(_source, []), do: []
 
