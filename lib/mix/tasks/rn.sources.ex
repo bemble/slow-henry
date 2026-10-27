@@ -80,6 +80,7 @@ defmodule Mix.Tasks.Rn.Sources do
         scope(s.config) != scope(e.config) && "scope #{inspect(scope(e.config))}, full pass",
         pr_toggle(s.config, e.config, "pull_requests", "merged PRs"),
         pr_toggle(s.config, e.config, "open_pull_requests", "open PRs"),
+        pr_toggle(s.config, e.config, "bot_pull_requests", "open bot PRs"),
         (e.active and not s.active) && sync_note(s)
       ]
       |> Enum.filter(& &1)
@@ -101,7 +102,13 @@ defmodule Mix.Tasks.Rn.Sources do
   end
 
   defp scope(config),
-    do: Map.drop(config || %{}, ["pull_requests", "open_pull_requests", "mirror_slug"])
+    do:
+      Map.drop(config || %{}, [
+        "pull_requests",
+        "open_pull_requests",
+        "bot_pull_requests",
+        "mirror_slug"
+      ])
 
   defp pr_toggle(old, new, key, what) do
     case {(old || %{})[key] == true, new[key] == true} do

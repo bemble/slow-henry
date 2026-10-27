@@ -245,6 +245,7 @@ url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # exclude = ["docs/*", "!docs/adr"]            # paths to leave out (see below)
 # pull_requests = true                         # also index merged PRs (default false)
 # open_pull_requests = true                    # and open ones, with pull_requests (default false)
+# bot_pull_requests = true                     # and open ones bots opened, with open_pull_requests (default false)
 
 [[jira]]
 project = "CLOUD"                # project key (the source identity)
@@ -299,9 +300,10 @@ They are synced hourly, picking up PRs edited or commented after merge.
 `open_pull_requests = true` (with `pull_requests`) also indexes the open
 ones, drafts included, named `PR #<n> [open]: <title>`; `semantic_search`'s
 `pr_state` filter (`"open"` / `"merged"`) tells them apart. Open PRs opened
-by bots (dependabot, renovate…) are left out. An open PR that gets merged is
-replaced by its merged version; one closed without merge is removed.
-Turning either option off removes the PRs it indexed.
+by bots (dependabot, renovate…) are left out unless `bot_pull_requests = true`
+is set too (they're marked `bot` in the metadata). An open PR that gets merged
+is replaced by its merged version; one closed without merge is removed.
+Turning any of these options off removes the PRs it indexed.
 
 New sources get their first sync right away, then git syncs every 15 minutes,
 Jira hourly and Drive every 30 minutes (plus a full Drive pass daily at 04:15).

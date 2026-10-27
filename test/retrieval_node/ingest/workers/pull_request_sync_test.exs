@@ -297,6 +297,48 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSyncTest do
                "2026-01-04T00:00:00Z"
     end
 
+    test "with bot_pull_requests, the open PRs bots opened are staged, marked bot", %{
+      source: source
+    } do
+      source
+      |> Source.update_changeset(%{
+        config: %{
+          "pull_requests" => true,
+          "open_pull_requests" => true,
+          "bot_pull_requests" => true
+        }
+      })
+      |> Repo.update!()
+
+      runner(%{
+        nil =>
+          {[
+             open_node(2, "2026-01-02T00:00:00Z"),
+             open_node(4, "2026-01-04T00:00:00Z", %{
+               "author" => %{"login" => "dependabot", "__typename" => "Bot"}
+             })
+           ], nil}
+      })
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+
+      assert [human, bot] = staged_rows(source)
+      refute Map.has_key?(human.metadata, "bot")
+      assert %{"state" => "open", "author" => "dependabot", "bot" => true} = bot.metadata
+    end
+
+    test "with bot_pull_requests turned off, the open bot PRs still indexed are deleted", %{
+      source: source
+    } do
+      indexed!(source, "pulls/7", %{"state" => "open", "bot" => true})
+      indexed!(source, "pulls/8", %{"state" => "open"})
+      indexed!(source, "pulls/9", %{"state" => "merged", "bot" => true})
+      runner(%{nil => {[], nil}})
+
+      assert :ok = perform_job(PullRequestSync, %{"source_id" => source.id})
+      assert [%{path: "pulls/7", status: "deleted"}] = staged_rows(source)
+    end
+
     test "a PR closed without merge is deleted when indexed, ignored otherwise", %{
       source: source
     } do

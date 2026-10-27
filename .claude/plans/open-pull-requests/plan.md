@@ -64,6 +64,20 @@ Also, turning `pull_requests` off leaves the indexed PR chunks in place.
    (indexed before it existed) counts as merged. `author`/`reviewer`
    descriptions stop saying "merged PRs".
 
+## Follow-up: open PRs opened by bots, as an option
+
+Bot-opened open PRs (dependabot, renovate…) carry useful context (what is
+being bumped, the changelog excerpts), so they can be indexed too with a
+third boolean, `bot_pull_requests = true`, effective only alongside
+`open_pull_requests`:
+
+- such PRs are indexed with `bot: true` in their metadata;
+- turning it on clears the PR watermark and queues a PR sync, like
+  `open_pull_requests`; turning it off makes each PR sync stage the deletion
+  of the open PRs marked `bot` (merged bot PRs stay, as before);
+- the sources editor gets an "Open bot PRs" checkbox, disabled while open
+  PRs are off; the source badge reads "PR + open + bots".
+
 ## Steps
 
 - [x] `Ingest.GitHub`: `prs_page/4` with an `open:` option (query with or
@@ -81,4 +95,5 @@ Also, turning `pull_requests` off leaves the indexed PR chunks in place.
 - [x] `mix precommit`, `mix credo --strict`, `mix dialyzer`
 - [x] Checked on the dev DB (snitun): 4 human open PRs indexed, 6
       dependabot ones skipped, `pr_state` filters both ways
-- [ ] PR on the fork (`feat:` commit)
+- [x] PR on the fork (`feat:` commit) — #43
+- [x] `bot_pull_requests` option (same PR)

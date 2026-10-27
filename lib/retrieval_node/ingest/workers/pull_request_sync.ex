@@ -2,7 +2,8 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   @moduledoc """
   Indexes the merged pull requests of a git source that has
   `pull_requests = true` in sources.toml (off by default) — and its open ones
-  too with `open_pull_requests = true` — through the GitHub App token
+  too with `open_pull_requests = true` (the ones bots opened only with
+  `bot_pull_requests = true`) — through the GitHub App token
   connected on the Settings page (`GitHub.OAuth`).
 
   Each PR becomes one document of the git source — title, author, state,
@@ -17,8 +18,9 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
     * merged → indexed;
     * open (drafts included) → indexed, named `PR #<n> [open]: <title>`;
-      left out when a bot opened it (dependabot, renovate…: long-lived,
-      constantly updated) — its merge is indexed as usual;
+      when a bot opened it (dependabot, renovate…), only with
+      `bot_pull_requests`, marked `bot` — otherwise its merge is indexed as
+      usual;
     * closed without merge → a deletion entry when it is indexed (an
       abandoned PR indexed while open).
 
@@ -28,7 +30,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   the GitHub search is sorted by update, oldest first, so a PR edited or
   commented later is picked up again and re-staged (unchanged content is
   skipped by the owner); `SourcesFile` clears it when open PRs are turned
-  on, since those not updated since it would be missed. At most
+  on (or bot ones), since those not updated since it would be missed. At most
   `@max_per_run` PRs are staged per run; a larger backlog snoozes and
   continues from the watermark, so a big repo never holds the job. Like the other
   sync workers it only stages rows; `SourceOwner` applies them.
@@ -37,7 +39,8 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   the job runs: with `pull_requests` off, every PR document of the source is
   staged for deletion and the watermark cleared (so turning it back on
   re-reads everything), without calling GitHub; with `open_pull_requests`
-  off, each run stages the deletion of the open PRs still indexed.
+  (or `bot_pull_requests`) off, each run stages the deletion of the open
+  PRs (bot-opened ones) still indexed.
   """
   use Oban.Worker,
     queue: :sync,
@@ -65,17 +68,28 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
     with :ok <- syncable(source) do
       if config["pull_requests"] == true,
-        do: sync(source, config["open_pull_requests"] == true),
+        do: sync(source, options(config)),
         else: purge_all(source)
     end
   end
 
-  defp sync(source, open?) do
+  defp options(config) do
+    open? = config["open_pull_requests"] == true
+    %{open: open?, bots: open? and config["bot_pull_requests"] == true}
+  end
+
+  defp sync(source, options) do
     with {:ok, repo} <- github_repo(source) do
       state = get_or_create_sync_state(source.id)
-      unless open?, do: purge_open(source)
+
+      cond do
+        not options.open -> purge_open(source, state: "open")
+        not options.bots -> purge_open(source, state: "open", bot: true)
+        true -> :ok
+      end
+
       since = Map.get(state.cursor || %{}, "prs_updated_since", @epoch)
-      sync(source, repo, open?, state, since, nil, 0)
+      sync(source, repo, options, state, since, nil, 0)
     end
   end
 
@@ -92,10 +106,10 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
     end
   end
 
-  defp sync(source, repo, open?, state, since, cursor, done) do
-    case GitHub.prs_page(repo, since, cursor, open: open?) do
+  defp sync(source, repo, options, state, since, cursor, done) do
+    case GitHub.prs_page(repo, since, cursor, open: options.open) do
       {:ok, prs, next} ->
-        state = stage!(source, state, prs)
+        state = stage!(source, state, prs, options)
         done = done + length(prs)
 
         cond do
@@ -107,7 +121,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
             {:snooze, @continue_in_s}
 
           true ->
-            sync(source, repo, open?, state, since, next, done)
+            sync(source, repo, options, state, since, next, done)
         end
 
       # Not connected: nothing a retry fixes; the next hourly run tries again.
@@ -121,15 +135,15 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   # Stage one page and move the watermark to its newest update, in one
   # transaction, so a crash never skips PRs.
-  defp stage!(_source, state, []), do: state
+  defp stage!(_source, state, [], _options), do: state
 
-  defp stage!(source, state, prs) do
+  defp stage!(source, state, prs, options) do
     newest = prs |> Enum.map(& &1.updated_at) |> Enum.max()
 
     {:ok, state} =
       Repo.transaction(
         fn ->
-          rows = rows(source, prs)
+          rows = rows(source, prs, options)
           if rows != [], do: {:ok, _ids} = PendingChunks.insert_raw_all(rows)
 
           # RepoSync shares this sync_states row (last_sha) and can run at the
@@ -164,14 +178,18 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
 
   # Closed-without-merge PRs are only deleted when they are indexed (or
   # staged): most were never open while the option was on.
-  defp rows(source, prs) do
+  defp rows(source, prs, options) do
     {closed, kept} = Enum.split_with(prs, &(&1.state == :closed))
     indexed = indexed_paths(source, Enum.map(closed, &path/1))
 
     deletions =
       for pr <- closed, path(pr) in indexed, do: deletion_row(source, path(pr))
 
-    contents = for pr <- kept, not (pr.state == :open and pr.bot_author), do: row(source, pr)
+    contents =
+      for pr <- kept,
+          options.bots or not (pr.state == :open and pr.bot_author),
+          do: row(source, pr)
+
     deletions ++ contents
   end
 
@@ -205,7 +223,8 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
           "url" => pr.url,
           "state" => Atom.to_string(pr.state),
           "merged_at" => pr.merged_at,
-          "draft" => if(pr.draft, do: true)
+          "draft" => if(pr.draft, do: true),
+          "bot" => if(pr.bot_author, do: true)
         })
         |> Map.reject(fn {_key, value} -> is_nil(value) end)
     }
@@ -229,7 +248,7 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   defp purge_all(source) do
     {:ok, _} =
       Repo.transaction(fn ->
-        stage_deletions!(source, pr_paths(source, nil))
+        stage_deletions!(source, pr_paths(source, []))
 
         from(s in SyncState,
           where: s.source_id == ^source.id,
@@ -242,9 +261,10 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
     :ok
   end
 
-  # `open_pull_requests` off: the open PRs still indexed go.
-  defp purge_open(source) do
-    case pr_paths(source, "open") do
+  # `open_pull_requests` (`bot_pull_requests`) off: the open PRs (opened by
+  # bots) still indexed go.
+  defp purge_open(source, filters) do
+    case pr_paths(source, filters) do
       [] ->
         :ok
 
@@ -261,25 +281,25 @@ defmodule RetrievalNode.Ingest.Workers.PullRequestSync do
   end
 
   # The PR paths of `source` that are indexed or staged — only those in
-  # `state` when given ("open"; merged PRs indexed before states existed
-  # have none).
-  defp pr_paths(source, state) do
-    pr_paths_query(Chunk, source, state)
-    |> union(^pr_paths_query(PendingChunk, source, state, raw: true))
+  # `state:` when given ("open"; merged PRs indexed before states existed
+  # have none), and opened by a bot with `bot: true`.
+  defp pr_paths(source, filters) do
+    pr_paths_query(Chunk, source, filters)
+    |> union(^pr_paths_query(PendingChunk, source, [{:raw, true} | filters]))
     |> Repo.all()
   end
 
-  defp pr_paths_query(schema, source, state, opts \\ []) do
+  defp pr_paths_query(schema, source, filters) do
     query =
       from r in schema,
         where: r.source_id == ^source.id and fragment("? \\? 'pr'", r.metadata),
         select: fragment("?->>'path'", r.metadata)
 
-    query = if opts[:raw], do: where(query, [r], r.status == "raw"), else: query
-
-    if state,
-      do: where(query, [r], fragment("?->>'state'", r.metadata) == ^state),
-      else: query
+    Enum.reduce(filters, query, fn
+      {:raw, true}, query -> where(query, [r], r.status == "raw")
+      {:state, state}, query -> where(query, [r], fragment("?->>'state'", r.metadata) == ^state)
+      {:bot, true}, query -> where(query, [r], fragment("(?->>'bot')::boolean", r.metadata))
+    end)
   end
 
   defp indexed_paths(_source, []), do: []

@@ -70,7 +70,7 @@ defmodule RetrievalNode.SourcesFileTest do
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"branch" => "main"})]})
 
       assert {:error,
-              "[[git]] #1: `active`, `pull_requests` and `open_pull_requests` must be true or false"} =
+              "[[git]] #1: `active`, `pull_requests`, `open_pull_requests` and `bot_pull_requests` must be true or false"} =
                SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"active" => "no"})]})
     end
 
@@ -228,6 +228,55 @@ defmodule RetrievalNode.SourcesFileTest do
     test "is ignored without pull_requests" do
       source = source!("adr", @url_a)
       prs!(source, %{"open_pull_requests" => true})
+      refute_enqueued(worker: PullRequestSync)
+    end
+  end
+
+  describe "bot_pull_requests" do
+    @open %{"pull_requests" => true, "open_pull_requests" => true}
+
+    test "is stored only when set, and must be a boolean" do
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{
+                 "git" => [git("adr", @url_a, Map.put(@open, "bot_pull_requests", true))]
+               })
+
+      assert config == Map.put(@open, "bot_pull_requests", true)
+
+      assert {:error, _} =
+               SourcesFile.parse(%{
+                 "git" => [git("adr", @url_a, Map.put(@open, "bot_pull_requests", 1))]
+               })
+    end
+
+    test "turning it on clears the PR watermark and queues a PR sync; off queues one too" do
+      source = source!("adr", @url_a)
+      prs!(source, @open)
+      Repo.delete_all(Oban.Job)
+
+      Repo.insert!(%SyncState{
+        source_id: source.id,
+        cursor: %{"last_sha" => "abc", "prs_updated_since" => "2026-03-01T00:00:00Z"},
+        status: :idle
+      })
+
+      prs!(source, Map.put(@open, "bot_pull_requests", true))
+
+      assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+      refute_enqueued(worker: RepoSync)
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, @open)
+      assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+    end
+
+    test "is ignored without open_pull_requests" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"pull_requests" => true})
+      Repo.delete_all(Oban.Job)
+
+      prs!(source, %{"pull_requests" => true, "bot_pull_requests" => true})
       refute_enqueued(worker: PullRequestSync)
     end
   end
