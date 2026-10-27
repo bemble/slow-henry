@@ -15,12 +15,13 @@ exposed to clients as **MCP tools** over HTTP.
 
 ## What it does
 
-- **Three sources, one index:** git repos (bare mirrors), Google Docs and
-  resolved Jira issues are chunked and embedded into a single store, so one
+- **Three sources, one index:** git repos (bare mirrors, with their GitHub
+  pull requests and issues on request), Google Docs and resolved Jira
+  issues are chunked and embedded into a single store, so one
   query ranks across all of them.
 - **Hybrid retrieval:** pgvector cosine similarity (HNSW) + Postgres full-text
   search (GIN), fused with RRF (k=60). Optional filters (`source`, `repo`,
-  `lang`, PR people and state, Jira type / people / parent) are applied *before* ranking
+  `lang`, GitHub people and PR / issue state, Jira type / people / parent) are applied *before* ranking
   so filtered searches stay accurate.
 - **Incremental ingestion:** per-source Oban sync jobs stage changed content in
   `pending_chunks` and advance a watermark; one `SourceOwner` process per source
@@ -123,7 +124,7 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `RERANKING` | `true` loads the in-process cross-encoder (~91 MB, CPU) at boot for `semantic_search`'s `rerank: true`. Unset: not loaded, and `rerank: true` keeps the normal ranking. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/settings` page. |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for pull requests and private clones (see below). |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for pull requests, issues and private clones (see below). |
 | `GITHUB_TOKEN` | Optional: a token (e.g. a fine-grained PAT) that overrides the one stored by `/settings`. |
 | `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
@@ -246,7 +247,8 @@ url = "https://github.com/my-org/my-repo.git"  # clone URL (the source identity)
 # pull_requests = true                         # also index merged PRs (default false)
 # open_pull_requests = true                    # and open ones, with pull_requests (default false)
 # bot_pull_requests = true                     # and open ones bots opened, with open_pull_requests (default false)
-# max_age = "2y"                               # drop non-code data (PRs) older than this: <n>d, w, m or y
+# issues = true                                # also index issues, open and closed (default false)
+# max_age = "2y"                               # drop non-code data (PRs, issues) older than this: <n>d, w, m or y
 
 [[jira]]
 project = "CLOUD"                # project key (the source identity)
@@ -264,7 +266,7 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), each with its pull request options (merged, open, open bot PRs,
+URL), each with its GitHub options (merged, open and open bot PRs, issues,
 max age),
 Jira projects are added by key with their options, `exclude` patterns
 and Drive ids are plain text fields (a pasted Drive folder URL is turned into
@@ -308,11 +310,22 @@ is set too (they're marked `bot` in the metadata). An open PR that gets merged
 is replaced by its merged version; one closed without merge is removed.
 Turning any of these options off removes the PRs it indexed.
 
+`issues = true` indexes the repo's issues the same way, open and closed (a
+closed issue keeps its discussion and resolution), under `issues/<number>`:
+title, author, state (and why it was closed), labels, assignees, the linked
+PRs (that closed it, or will once merged), the description and the human
+comments. Issues bots opened
+are kept, marked `bot`. `semantic_search`'s `issue_state` filter (`"open"` /
+`"closed"`) selects them, `author` matches their author and `involves` their
+author or assignees. They are synced hourly; turning the option off removes
+them.
+
 `max_age = "2y"` (a number and `d`, `w`, `m` or `y`) limits a repo's
-non-code data — its pull requests, for now — to a rolling window: a merged
-PR is kept while its merge is younger than that, an open one while its last
-activity is. Each PR sync drops what left the window, and changing the
-value re-reads the PR history. The code itself is never limited.
+non-code data — its pull requests and issues — to a rolling window: a
+merged PR (closed issue) is kept while its merge (closing) is younger than
+that, an open one while its last activity is. Each sync drops what left the
+window, and changing the value re-reads their history. The code itself is
+never limited.
 
 New sources get their first sync right away, then git syncs every 15 minutes,
 Jira hourly and Drive every 30 minutes (plus a full Drive pass daily at 04:15).

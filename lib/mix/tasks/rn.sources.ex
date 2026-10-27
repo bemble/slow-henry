@@ -81,6 +81,7 @@ defmodule Mix.Tasks.Rn.Sources do
         pr_toggle(s.config, e.config, "pull_requests", "merged PRs"),
         pr_toggle(s.config, e.config, "open_pull_requests", "open PRs"),
         pr_toggle(s.config, e.config, "bot_pull_requests", "open bot PRs"),
+        toggle(s.config, e.config, "issues", "issue sync", "issues"),
         max_age_change(s.config, e.config),
         (e.active and not s.active) && sync_note(s)
       ]
@@ -108,13 +109,16 @@ defmodule Mix.Tasks.Rn.Sources do
         "pull_requests",
         "open_pull_requests",
         "bot_pull_requests",
+        "issues",
         "max_age",
         "mirror_slug"
       ])
 
-  defp pr_toggle(old, new, key, what) do
+  defp pr_toggle(old, new, key, what), do: toggle(old, new, key, "PR sync", what)
+
+  defp toggle(old, new, key, sync, what) do
     case {(old || %{})[key] == true, new[key] == true} do
-      {false, true} -> "#{key} on, PR sync"
+      {false, true} -> "#{key} on, #{sync}"
       {true, false} -> "#{key} off, #{what} removed"
       _ -> false
     end
@@ -123,8 +127,8 @@ defmodule Mix.Tasks.Rn.Sources do
   defp max_age_change(old, new) do
     case {(old || %{})["max_age"], new["max_age"]} do
       {same, same} -> false
-      {_, nil} -> "max_age removed, PRs re-read"
-      {_, age} -> "max_age #{age}, PRs re-read"
+      {_, nil} -> "max_age removed, PRs and issues re-read"
+      {_, age} -> "max_age #{age}, PRs and issues re-read"
     end
   end
 

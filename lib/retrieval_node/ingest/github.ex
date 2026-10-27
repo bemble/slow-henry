@@ -1,10 +1,11 @@
 defmodule RetrievalNode.Ingest.GitHub do
   @moduledoc """
   Pull requests of a GitHub repo — merged ones, and open ones on request —
-  through GitHub's GraphQL API with the GitHub App user token
-  (`GitHub.OAuth`, connected from the Settings page).
+  and its issues, through GitHub's GraphQL API with the GitHub App user
+  token (`GitHub.OAuth`, connected from the Settings page).
 
-  `prs_page/4` walks a search sorted by `updated` ascending, so a caller can
+  `prs_page/4` and `issues_page/3` walk a search sorted by `updated`
+  ascending, so a caller can
   store the last `updatedAt` it saw as its watermark and resume from there. `list_repos/0` feeds the Sources editor's repo picker. Req
   options are extended by `:github_req_options` (tests point them at a
   `Req.Test` plug).
@@ -34,6 +35,25 @@ defmodule RetrievalNode.Ingest.GitHub do
   }
   """
 
+  @issue_query """
+  query($q: String!, $after: String, $owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) { id }
+    search(query: $q, type: ISSUE, first: 50, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        ... on Issue {
+          number title body url state stateReason closedAt updatedAt
+          author { login __typename }
+          labels(first: 20) { nodes { name } }
+          assignees(first: 10) { nodes { login } }
+          closedByPullRequestsReferences(first: 10) { nodes { number } }
+          comments(first: 100) { nodes { body author { login __typename } } }
+        }
+      }
+    }
+  }
+  """
+
   # AI reviewers/commenters that don't come through as a GitHub App bot
   # (`__typename: "Bot"` or a `[bot]` login), compared lowercased. They are
   # left out of the rendered discussion and of `reviewers`.
@@ -52,6 +72,22 @@ defmodule RetrievalNode.Ingest.GitHub do
           author: String.t(),
           bot_author: boolean(),
           reviewers: [String.t()],
+          text: String.t()
+        }
+
+  @type issue :: %{
+          number: pos_integer(),
+          title: String.t(),
+          url: String.t(),
+          state: :open | :closed,
+          state_reason: String.t() | nil,
+          closed_at: String.t() | nil,
+          updated_at: String.t(),
+          author: String.t(),
+          bot_author: boolean(),
+          assignees: [String.t()],
+          labels: [String.t()],
+          linked_prs: [pos_integer()],
           text: String.t()
         }
 
@@ -74,18 +110,25 @@ defmodule RetrievalNode.Ingest.GitHub do
   `{:ok, prs, next_cursor | nil}`.
   """
   def prs_page(repo, since, cursor \\ nil, opts \\ []) do
-    [owner, name] = String.split(repo, "/", parts: 2)
     search = search_query(repo, since, Keyword.get(opts, :open, false))
+
+    with {:ok, nodes, next} <- search_page(@query, repo, search, cursor) do
+      {:ok, Enum.map(nodes, &to_pr(repo, &1)), next}
+    end
+  end
+
+  defp search_page(query, repo, search, cursor) do
+    [owner, name] = String.split(repo, "/", parts: 2)
     vars = %{"q" => search, "owner" => owner, "name" => name}
     vars = if cursor, do: Map.put(vars, "after", cursor), else: vars
 
     # A search on a repo the token can't see just finds nothing; asking for
     # the repository too turns that into an error instead of a silent no-op.
-    case graphql(@query, vars) do
+    case graphql(query, vars) do
       {:ok, %{"data" => %{"repository" => %{"id" => _}, "search" => search}}} ->
-        prs = for node <- search["nodes"] || [], node["number"], do: to_pr(repo, node)
+        nodes = for node <- search["nodes"] || [], node["number"], do: node
         next = if search["pageInfo"]["hasNextPage"], do: search["pageInfo"]["endCursor"]
-        {:ok, prs, next}
+        {:ok, nodes, next}
 
       {:ok, %{"data" => %{"repository" => nil}}} ->
         {:error, {:github_repo_not_visible, repo}}
@@ -95,6 +138,19 @@ defmodule RetrievalNode.Ingest.GitHub do
 
       other ->
         other
+    end
+  end
+
+  @doc """
+  One page (up to 50) of the issues of `repo` updated at or after `since`
+  (ISO 8601), oldest update first, open and closed. Returns
+  `{:ok, issues, next_cursor | nil}`.
+  """
+  def issues_page(repo, since, cursor \\ nil) do
+    search = "repo:#{repo} is:issue updated:>=#{since} sort:updated-asc"
+
+    with {:ok, nodes, next} <- search_page(@issue_query, repo, search, cursor) do
+      {:ok, Enum.map(nodes, &to_issue(repo, &1)), next}
     end
   end
 
@@ -163,6 +219,29 @@ defmodule RetrievalNode.Ingest.GitHub do
     }
   end
 
+  @doc false
+  def to_issue(repo, node) do
+    %{
+      number: node["number"],
+      title: node["title"],
+      url: node["url"],
+      state: if(node["state"] == "OPEN", do: :open, else: :closed),
+      state_reason: node["stateReason"] && String.downcase(node["stateReason"]),
+      closed_at: node["closedAt"],
+      updated_at: node["updatedAt"],
+      author: login(node["author"]),
+      bot_author: bot?(node["author"]),
+      assignees: for(a <- get_in(node, ["assignees", "nodes"]) || [], do: login(a)),
+      labels: for(l <- get_in(node, ["labels", "nodes"]) || [], do: l["name"]),
+      linked_prs:
+        for(
+          pr <- get_in(node, ["closedByPullRequestsReferences", "nodes"]) || [],
+          do: pr["number"]
+        ),
+      text: render_issue(repo, node)
+    }
+  end
+
   # Older payloads (and the merged-only search) may lack `state`: a merge
   # date says enough.
   defp state(%{"state" => "OPEN"}), do: :open
@@ -207,6 +286,53 @@ defmodule RetrievalNode.Ingest.GitHub do
       |> Enum.reject(&is_nil/1)
 
     Enum.join([Enum.join(header, "\n") | sections], "\n\n") <> "\n"
+  end
+
+  # Markdown, as for PRs: title, who/state, what it's about, the
+  # description, then the human comments.
+  defp render_issue(repo, node) do
+    header =
+      [
+        "# #{node["title"]}",
+        "",
+        "Issue ##{node["number"]} in #{repo} by @#{login(node["author"])}, #{issue_status(node)}",
+        node["url"],
+        listed("Labels", node, "labels", & &1["name"]),
+        listed("Assignees", node, "assignees", &"@#{login(&1)}"),
+        listed("Linked PRs", node, "closedByPullRequestsReferences", &"##{&1["number"]}")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    sections =
+      [
+        blank_to_nil(node["body"]),
+        section("Comments", nodes(node, "comments"), fn c ->
+          "**@#{login(c["author"])}:** #{String.trim(c["body"])}"
+        end)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join([Enum.join(header, "\n") | sections], "\n\n") <> "\n"
+  end
+
+  # `Labels: bug, cloud`, or nil when there are none.
+  defp listed(title, node, key, fun) do
+    case get_in(node, [key, "nodes"]) || [] do
+      [] -> nil
+      items -> "#{title}: #{Enum.map_join(items, ", ", fun)}"
+    end
+  end
+
+  defp issue_status(%{"state" => "OPEN"}), do: "open"
+
+  defp issue_status(node) do
+    reason =
+      case node["stateReason"] do
+        r when r in [nil, "COMPLETED"] -> ""
+        r -> " as " <> String.replace(String.downcase(r), "_", " ")
+      end
+
+    "closed #{date(node["closedAt"])}#{reason}"
   end
 
   defp status(node) do
