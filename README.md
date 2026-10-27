@@ -20,7 +20,7 @@ exposed to clients as **MCP tools** over HTTP.
   query ranks across all of them.
 - **Hybrid retrieval:** pgvector cosine similarity (HNSW) + Postgres full-text
   search (GIN), fused with RRF (k=60). Optional filters (`source`, `repo`,
-  `lang`, PR people, Jira type / people / parent) are applied *before* ranking
+  `lang`, PR people and state, Jira type / people / parent) are applied *before* ranking
   so filtered searches stay accurate.
 - **Incremental ingestion:** per-source Oban sync jobs stage changed content in
   `pending_chunks` and advance a watermark; one `SourceOwner` process per source
@@ -123,7 +123,7 @@ credentials it obtains itself (OAuth tokens) go to `DATA_DIR/secrets.toml`.
 | `RERANKING` | `true` loads the in-process cross-encoder (~91 MB, CPU) at boot for `semantic_search`'s `rerank: true`. Unset: not loaded, and `rerank: true` keeps the normal ranking. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Drive OAuth client (see below). |
 | `GOOGLE_REFRESH_TOKEN` | Optional: overrides the Google token stored by the `/settings` page. |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for merged PRs and private clones (see below). |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub App, for pull requests and private clones (see below). |
 | `GITHUB_TOKEN` | Optional: a token (e.g. a fine-grained PAT) that overrides the one stored by `/settings`. |
 | `DATA_DIR` | The app's data dir: `sources.toml` and `secrets.toml` (default `./data` in dev, `/var/lib/retrieval_node` in a release). |
 | `SOURCES_FILE` | Path of the sources file (default `DATA_DIR/sources.toml`). |
@@ -263,7 +263,8 @@ include = ["0AbCdEfGhIjKlMnOpQ"] # shared drive or folder ids (folders: whole tr
 The **Edit sources** page (`/sources/edit`, from the Sources page) writes
 this file for you: GitHub repos are picked from the ones your GitHub
 connection can read (any other git URL, or a public repo, can be added by its
-URL), Jira projects are added by key with their options, `exclude` patterns
+URL), each with its pull request options (merged, open, open bot PRs),
+Jira projects are added by key with their options, `exclude` patterns
 and Drive ids are plain text fields (a pasted Drive folder URL is turned into
 its id), and a review step shows what will change
 before saving. Saving rewrites the file without its comments, and is refused
