@@ -113,7 +113,7 @@ defmodule RetrievalNodeWeb.SourceLive do
   attr :source, :map, required: true
   attr :class, :string, default: nil
 
-  @doc "Chips for a git source's options: merged PRs indexed, paths excluded."
+  @doc "Chips for a git source's options: PRs indexed, their max age, paths excluded."
   def option_chips(assigns) do
     config = assigns.source.config || %{}
 
@@ -124,7 +124,8 @@ defmodule RetrievalNodeWeb.SourceLive do
         bot_prs:
           config["pull_requests"] == true and config["open_pull_requests"] == true and
             config["bot_pull_requests"] == true,
-        exclude: config["exclude"] || []
+        exclude: config["exclude"] || [],
+        max_age: config["max_age"]
       )
 
     ~H"""
@@ -144,6 +145,13 @@ defmodule RetrievalNodeWeb.SourceLive do
         @open_prs -> "PR + open"
         true -> "PR"
       end}
+    </span>
+    <span
+      :if={@max_age}
+      class={["badge badge-ghost badge-sm", @class]}
+      title={"Non-code data (pull requests) older than #{@max_age} is dropped"}
+    >
+      ≤ {@max_age}
     </span>
     <span
       :if={@exclude != []}

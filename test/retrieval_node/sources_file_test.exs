@@ -281,6 +281,66 @@ defmodule RetrievalNode.SourcesFileTest do
     end
   end
 
+  describe "max_age" do
+    test "is stored only when set, and must be a number and a unit" do
+      assert {:ok, [%{config: config}]} =
+               SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"max_age" => "2y"})]})
+
+      assert config == %{"max_age" => "2y"}
+
+      assert {:ok, [%{config: %{}}]} = SourcesFile.parse(%{"git" => [git("adr", @url_a)]})
+
+      for bad <- ["2 years", 2, "0d"] do
+        assert {:error, "[[git]] #1: `max_age` must be" <> _} =
+                 SourcesFile.parse(%{"git" => [git("adr", @url_a, %{"max_age" => bad})]})
+      end
+    end
+
+    test "changing it clears the PR watermark and queues a PR sync, never a repo pass" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"pull_requests" => true})
+
+      for age <- ["2y", "6m", nil] do
+        Repo.delete_all(Oban.Job)
+
+        Repo.insert!(
+          %SyncState{
+            source_id: source.id,
+            cursor: %{"last_sha" => "abc", "prs_updated_since" => "2026-03-01T00:00:00Z"},
+            status: :idle
+          },
+          on_conflict: {:replace, [:cursor]},
+          conflict_target: :source_id
+        )
+
+        prs!(
+          source,
+          Map.reject(%{"pull_requests" => true, "max_age" => age}, &is_nil(elem(&1, 1)))
+        )
+
+        assert Repo.get_by!(SyncState, source_id: source.id).cursor == %{"last_sha" => "abc"}
+        assert_enqueued(worker: PullRequestSync, args: %{"source_id" => source.id})
+        refute_enqueued(worker: RepoSync)
+      end
+    end
+
+    test "without pull_requests, changing it queues nothing" do
+      source = source!("adr", @url_a)
+      prs!(source, %{"max_age" => "2y"})
+      refute_enqueued(worker: PullRequestSync)
+      refute_enqueued(worker: RepoSync)
+    end
+
+    test "is written back" do
+      {:ok, entries} =
+        SourcesFile.parse(%{
+          "git" => [git("adr", @url_a, %{"pull_requests" => true, "max_age" => "18m"})]
+        })
+
+      assert SourcesFile.encode(entries) =~ ~s(max_age = "18m")
+    end
+  end
+
   describe "[drive]" do
     test "parses scope with defaults" do
       assert {:ok, [drive]} = SourcesFile.parse(%{"drive" => %{"include" => ["0AbC", "1x_Y-z"]}})

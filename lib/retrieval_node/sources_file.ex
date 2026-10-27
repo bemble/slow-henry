@@ -13,6 +13,7 @@ defmodule RetrievalNode.SourcesFile do
       # pull_requests = true                        # also index merged PRs (default false)
       # open_pull_requests = true                   # and open ones, with pull_requests (default false)
       # bot_pull_requests = true                    # and open ones bots opened, with open_pull_requests (default false)
+      # max_age = "2y"                              # drop non-code data (PRs) older than this: <n>d|w|m|y (Ingest.MaxAge)
 
       [[jira]]
       project = "CLOUD"                             # project key (the source identity)
@@ -63,7 +64,7 @@ defmodule RetrievalNode.SourcesFile do
 
   import Ecto.Query
 
-  alias RetrievalNode.Ingest.{DrivePolicy, PathFilter}
+  alias RetrievalNode.Ingest.{DrivePolicy, MaxAge, PathFilter}
   alias RetrievalNode.Ingest.Workers.{DriveSync, JiraSync, PullRequestSync, RepoSync}
   alias RetrievalNode.Repo
   alias RetrievalNode.Retrieval.{Source, SyncState}
@@ -216,7 +217,8 @@ defmodule RetrievalNode.SourcesFile do
       {"exclude", e.config["exclude"]},
       {"pull_requests", e.config["pull_requests"]},
       {"open_pull_requests", e.config["open_pull_requests"]},
-      {"bot_pull_requests", e.config["bot_pull_requests"]}
+      {"bot_pull_requests", e.config["bot_pull_requests"]},
+      {"max_age", e.config["max_age"]}
     ])
   end
 
@@ -405,23 +407,41 @@ defmodule RetrievalNode.SourcesFile do
 
   # PR sync on any PR option change (or when the source comes back): it
   # reads the options itself, so the same job syncs or stages the deletions
-  # of what was turned off. Open PRs (or bot ones) newly on clear the PR
-  # watermark first: those not updated since it would be missed. (Not a job
-  # arg: a sync that snoozes through a backlog re-runs with the same args.)
+  # of what was turned off. Open PRs (or bot ones) newly on, or a changed
+  # `max_age`, clear the PR watermark first: PRs not updated since it would
+  # be missed (a narrower window just purges, at that run). (Not a job arg:
+  # a sync that snoozes through a backlog re-runs with the same args.)
   defp pr_job(old, new) do
-    prs? = &(&1["pull_requests"] == true)
-    open? = &(prs?.(&1) and &1["open_pull_requests"] == true)
-    bots? = &(open?.(&1) and &1["bot_pull_requests"] == true)
-    newly_on? = fn on? -> on?.(new) and not on?.(old) end
+    {old, new} = {pr_options(old), pr_options(new)}
+    newly_on? = &(new[&1] and not old[&1])
+    age_changed? = old.prs and new.prs and old.max_age != new.max_age
 
     cond do
-      newly_on?.(open?) or newly_on?.(bots?) -> [:reset_pr_watermark, {PullRequestSync, %{}}]
-      Enum.any?([prs?, open?, bots?], &(&1.(new) != &1.(old))) -> [{PullRequestSync, %{}}]
-      true -> []
+      newly_on?.(:open) or newly_on?.(:bots) or age_changed? ->
+        [:reset_pr_watermark, {PullRequestSync, %{}}]
+
+      Map.delete(old, :max_age) != Map.delete(new, :max_age) ->
+        [{PullRequestSync, %{}}]
+
+      true ->
+        []
     end
   end
 
-  defp scope(config), do: Map.drop(config, @pr_options)
+  # The PR options in effect: each boolean needs the one before it.
+  defp pr_options(config) do
+    prs = config["pull_requests"] == true
+    open = prs and config["open_pull_requests"] == true
+
+    %{
+      prs: prs,
+      open: open,
+      bots: open and config["bot_pull_requests"] == true,
+      max_age: config["max_age"]
+    }
+  end
+
+  defp scope(config), do: Map.drop(config, ["max_age" | @pr_options])
 
   defp worker(%{source_type: :drive_folder}), do: DriveSync
   defp worker(%{source_type: :jira_project}), do: JiraSync
@@ -509,7 +529,8 @@ defmodule RetrievalNode.SourcesFile do
     active = Map.get(item, "active", true)
     exclude = Map.get(item, "exclude", [])
     pr_options = for o <- @pr_options, do: Map.get(item, o, false)
-    unknown = Map.keys(item) -- ["name", "url", "active", "exclude" | @pr_options]
+    max_age = Map.get(item, "max_age")
+    unknown = Map.keys(item) -- ["name", "url", "active", "exclude", "max_age" | @pr_options]
 
     cond do
       unknown != [] ->
@@ -521,12 +542,8 @@ defmodule RetrievalNode.SourcesFile do
       not Enum.any?(@url_schemes, &String.starts_with?(url, &1)) ->
         {:error, "invalid url #{inspect(url)}"}
 
-      not Enum.all?([active | pr_options], &is_boolean/1) ->
-        {:error,
-         "`active`, `pull_requests`, `open_pull_requests` and `bot_pull_requests` must be true or false"}
-
-      not PathFilter.valid?(exclude) ->
-        {:error, "`exclude` must be a list of path patterns"}
+      error = git_options_error([active | pr_options], exclude, max_age) ->
+        {:error, error}
 
       true ->
         {:ok,
@@ -535,19 +552,37 @@ defmodule RetrievalNode.SourcesFile do
            identifier: url,
            name: name,
            active: active,
-           config: git_config(exclude, Enum.zip(@pr_options, pr_options))
+           config: git_config(exclude, Enum.zip(@pr_options, pr_options), max_age)
          }}
     end
   end
 
   defp git_entry(_), do: {:error, "`name` and `url` are required strings"}
 
+  defp git_options_error(booleans, exclude, max_age) do
+    cond do
+      not Enum.all?(booleans, &is_boolean/1) ->
+        "`active`, `pull_requests`, `open_pull_requests` and `bot_pull_requests` must be true or false"
+
+      not PathFilter.valid?(exclude) ->
+        "`exclude` must be a list of path patterns"
+
+      max_age != nil and not MaxAge.valid?(max_age) ->
+        "`max_age` must be a number and a unit (d, w, m or y), e.g. \"2y\""
+
+      true ->
+        nil
+    end
+  end
+
   # Options are stored only when set, so sources configured before they
   # existed don't read as changed.
-  defp git_config(exclude, pr_options) do
-    for {option, true} <- pr_options,
-        into: if(exclude != [], do: %{"exclude" => exclude}, else: %{}),
-        do: {option, true}
+  defp git_config(exclude, pr_options, max_age) do
+    base =
+      %{"exclude" => exclude, "max_age" => max_age}
+      |> Map.reject(fn {_key, value} -> value in [nil, []] end)
+
+    for {option, true} <- pr_options, into: base, do: {option, true}
   end
 
   defp jira_tables(doc) do
